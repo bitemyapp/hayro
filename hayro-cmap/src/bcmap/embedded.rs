@@ -7,17 +7,11 @@ use crate::CMapName;
 
 pub(super) static BUNDLE: LazyLock<Bundle> = LazyLock::new(|| {
     // We already know the bundle is valid, so we can skip validation and just
-    // unwrap everywhere.
+    // unwrap everywhere. It's stored uncompressed: decompressing it took longer than
+    // everything else a page of CJK text needs.
 
-    let compressed = include_bytes!("../../assets/cmaps.brotli");
-    let mut decompressed = Vec::new();
-    let mut reader = compressed.as_slice();
-
-    brotli::BrotliDecompress(&mut reader, &mut decompressed)
-        .ok()
-        .unwrap();
-
-    let mut reader = Reader::new(&decompressed);
+    let data: &'static [u8] = include_bytes!("../../assets/cmaps.bin");
+    let mut reader = Reader::new(data);
     let huff_size = reader.read_u32().unwrap() as usize;
     let huff_data = reader.read_bytes(huff_size).unwrap();
     let (delta_table, count_table) = huffman::decode_tables(huff_data).unwrap();
@@ -36,7 +30,7 @@ pub(super) static BUNDLE: LazyLock<Bundle> = LazyLock::new(|| {
     }
 
     Bundle {
-        data: decompressed,
+        data,
         delta_table,
         count_table,
         entries,
@@ -44,7 +38,7 @@ pub(super) static BUNDLE: LazyLock<Bundle> = LazyLock::new(|| {
 });
 
 pub(super) struct Bundle {
-    data: Vec<u8>,
+    data: &'static [u8],
     pub(super) delta_table: HuffmanTable,
     pub(super) count_table: HuffmanTable,
     entries: Vec<Range<usize>>,
