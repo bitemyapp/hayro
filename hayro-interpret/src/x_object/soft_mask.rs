@@ -134,10 +134,17 @@ impl<'a> SoftMask<'a> {
 
     /// Interpret the contents of the mask into the given device.
     pub fn interpret(&self, device: &mut impl Device<'a>) {
-        let state = State::new(self.0.root_transform);
+        self.interpret_translated(device, kurbo::Vec2::ZERO);
+    }
+
+    /// Like [`Self::interpret`], with everything moved by `offset` in device space, to draw
+    /// part of the mask into a smaller device.
+    pub fn interpret_translated(&self, device: &mut impl Device<'a>, offset: kurbo::Vec2) {
+        let root_transform = Affine::translate(offset) * self.0.root_transform;
+        let state = State::new(root_transform);
         let mut ctx = Context::new_with(
-            self.0.root_transform,
-            self.0.bbox,
+            root_transform,
+            self.0.bbox + offset,
             &self.0.interpreter_cache,
             self.0.xref,
             self.0.settings.clone(),
@@ -147,6 +154,14 @@ impl<'a> SoftMask<'a> {
         self.0
             .group
             .draw(&self.0.parent_resources, &mut ctx, device);
+    }
+
+    /// The bounds, in device space, of what the mask's group can draw. Outside of them, the
+    /// mask is its background.
+    pub fn bbox(&self) -> kurbo::Rect {
+        let [x0, y0, x1, y1] = self.0.group.bbox.map(f64::from);
+        (self.0.root_transform * self.0.group.matrix)
+            .transform_rect_bbox(kurbo::Rect::new(x0, y0, x1, y1))
     }
 
     /// Return the underlying mask type.

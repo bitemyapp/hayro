@@ -1,23 +1,13 @@
 use crate::{GlobalState, Renderer, convert_blend_mode, derive_settings};
 use hayro_interpret::{BlendMode, CacheKey, MaskType, SoftMask};
-use kurbo::Rect;
+use kurbo::{Rect, Vec2};
 use vello_cpu::color::palette::css::BLACK;
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::{Mask, Pixmap, RenderSettings};
 
 impl Renderer<'_> {
     pub(super) fn apply_soft_mask(&mut self, mask: Option<&SoftMask<'_>>) {
-        let settings = *self.ctx.render_settings();
-        let global = self.global;
-        let mask = mask.map(|m| {
-            let width = self.ctx.width();
-            let height = self.ctx.height();
-
-            self.soft_mask_cache
-                .entry(m.cache_key())
-                .or_insert_with(|| draw_soft_mask(m, settings, width, height, global))
-                .clone()
-        });
+        let mask = mask.map(|m| self.soft_mask(m));
 
         if let Some(mask) = mask {
             self.ctx.set_mask(mask);
@@ -32,28 +22,32 @@ impl Renderer<'_> {
         mask: Option<SoftMask<'_>>,
         blend_mode: BlendMode,
     ) {
-        let settings = *self.ctx.render_settings();
-        let global = self.global;
+        let mask = mask.map(|m| self.soft_mask(&m));
         self.ctx.push_layer(
             None,
             Some(convert_blend_mode(blend_mode)),
             Some(opacity),
-            // TODO: Deduplicate
-            mask.map(|m| {
-                let width = self.ctx.width();
-                let height = self.ctx.height();
-
-                self.soft_mask_cache
-                    .entry(m.cache_key())
-                    .or_insert_with(|| draw_soft_mask(&m, settings, width, height, global))
-                    .clone()
-            }),
+            mask,
             None,
         );
     }
 
     pub(super) fn pop_transparency_group(&mut self) {
         self.ctx.pop_layer();
+    }
+
+    /// The mask, drawn where it can matter: within what the active clips let through.
+    fn soft_mask(&mut self, mask: &SoftMask<'_>) -> Mask {
+        let settings = *self.ctx.render_settings();
+        let (width, height) = (self.ctx.width(), self.ctx.height());
+        let visible = self.visible();
+        let region = [visible.x0, visible.y0, visible.x1, visible.y1].map(|v| v as u16);
+        let global = self.global;
+
+        self.soft_mask_cache
+            .entry((mask.cache_key(), region))
+            .or_insert_with(|| draw_soft_mask(mask, settings, width, height, global, visible))
+            .clone()
     }
 }
 
@@ -63,7 +57,54 @@ fn draw_soft_mask(
     width: u16,
     height: u16,
     global: &GlobalState,
+    visible: Rect,
 ) -> Mask {
+    // Outside the bounds of what its group draws, the mask is its background, and only what
+    // the clips let through matters, so only the rest is drawn. Both are whole pixels.
+    let region = mask.bbox().expand().inflate(1.0, 1.0);
+    let region = if region.is_finite() {
+        region.intersect(visible)
+    } else {
+        visible
+    };
+    let (x0, y0) = (region.x0 as usize, region.y0 as usize);
+    let region_width = region.width() as usize;
+
+    let mut values = draw_region(mask, settings, region, global);
+    let mut outside = [background(mask, settings)];
+
+    if let Some(transfer_function) = mask.transfer_function() {
+        transfer_function.apply_to(&mut values);
+        transfer_function.apply_to(&mut outside);
+    }
+
+    if values.len() == usize::from(width) * usize::from(height) {
+        return Mask::from_parts(values, width, height);
+    }
+
+    let mut all = vec![outside[0]; usize::from(width) * usize::from(height)];
+    if region_width > 0 {
+        for (row, values) in values.chunks_exact(region_width).enumerate() {
+            let start = (y0 + row) * usize::from(width) + x0;
+            all[start..][..region_width].copy_from_slice(values);
+        }
+    }
+
+    Mask::from_parts(all, width, height)
+}
+
+/// The mask's values within `region` of the render target, row by row.
+fn draw_region(
+    mask: &SoftMask<'_>,
+    settings: RenderSettings,
+    region: Rect,
+    global: &GlobalState,
+) -> Vec<u8> {
+    let (width, height) = (region.width() as u16, region.height() as u16);
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+
     let mut ctx = vello_cpu::RenderContext::new_with(width, height, derive_settings(&settings));
     let mut renderer = Renderer::new(&mut ctx, global);
 
@@ -80,7 +121,7 @@ fn draw_soft_mask(
         renderer.ctx.push_layer(None, None, None, None, None);
     }
 
-    mask.interpret(&mut renderer);
+    mask.interpret_translated(&mut renderer, Vec2::new(-region.x0, -region.y0));
 
     if apply_bg {
         renderer.ctx.pop_layer();
@@ -91,16 +132,31 @@ fn draw_soft_mask(
     let mut resources = vello_cpu::Resources::default();
     renderer.ctx.render(&mut pix, &mut resources);
 
-    let mut values = match mask.mask_type() {
+    match mask.mask_type() {
         MaskType::Luminosity => luminance(&pix),
         MaskType::Alpha => pix.data().iter().map(|pixel| pixel.a).collect(),
-    };
+    }
+}
 
-    if let Some(transfer_function) = mask.transfer_function() {
-        transfer_function.apply_to(&mut values);
+/// The mask's value where its group draws nothing: its background, filled as `draw_region`
+/// fills it.
+fn background(mask: &SoftMask<'_>, settings: RenderSettings) -> u8 {
+    let bg_color = mask.background_color().to_rgba();
+    if bg_color.to_rgba8() == BLACK.to_rgba8().to_u8_array() {
+        return 0;
     }
 
-    Mask::from_parts(values, width, height)
+    let mut ctx = vello_cpu::RenderContext::new_with(1, 1, derive_settings(&settings));
+    ctx.set_paint(AlphaColor::<Srgb>::new(bg_color.components()));
+    ctx.fill_rect(&Rect::new(0.0, 0.0, 1.0, 1.0));
+    let mut pix = Pixmap::new(1, 1);
+    ctx.flush();
+    ctx.render(&mut pix, &mut vello_cpu::Resources::default());
+
+    match mask.mask_type() {
+        MaskType::Luminosity => luminance(&pix)[0],
+        MaskType::Alpha => pix.data()[0].a,
+    }
 }
 
 /// The luminance of each pixel of a premultiplied pixmap, as `Mask::new_luminance` computes it

@@ -95,7 +95,7 @@ pub(crate) struct Renderer<'a> {
     global: &'a GlobalState,
     pub(crate) ctx: &'a mut RenderContext,
     pub(crate) inside_pattern: bool,
-    pub(crate) soft_mask_cache: FxHashMap<u128, Mask>,
+    pub(crate) soft_mask_cache: FxHashMap<(u128, [u16; 4]), Mask>,
     pub(crate) in_type3_glyph: bool,
     /// The device-space bounds of the render target within each active clip, outermost first.
     pub(crate) clip_bounds: Vec<Rect>,
