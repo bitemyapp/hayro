@@ -253,14 +253,11 @@ impl ShadingPattern {
                     function: function.clone(),
                 })
             }
-            ShadingType::CoonsPatchMesh { patches, function } => {
-                let mut triangles = vec![];
-                for patch in patches {
-                    patch.to_triangles(&mut triangles);
-                }
-
+            ShadingType::CoonsPatchMesh { function, .. } => {
                 let full_transform = self.matrix;
-                let samples = sample_triangles(&triangles, full_transform, target);
+                let samples = self.shading.with_patch_triangles(|triangles| {
+                    sample_triangles(triangles, full_transform, target)
+                });
 
                 base_transform = Affine::IDENTITY;
 
@@ -269,14 +266,11 @@ impl ShadingPattern {
                     function: function.clone(),
                 })
             }
-            ShadingType::TensorProductPatchMesh { patches, function } => {
-                let mut triangles = vec![];
-                for patch in patches {
-                    patch.to_triangles(&mut triangles);
-                }
-
+            ShadingType::TensorProductPatchMesh { function, .. } => {
                 let full_transform = self.matrix;
-                let samples = sample_triangles(&triangles, full_transform, target);
+                let samples = self.shading.with_patch_triangles(|triangles| {
+                    sample_triangles(triangles, full_transform, target)
+                });
 
                 base_transform = Affine::IDENTITY;
 

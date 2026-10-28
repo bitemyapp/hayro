@@ -19,7 +19,8 @@ use hayro_syntax::object::dict::keys::{
 };
 use kurbo::{Affine, BezPath, CubicBez, ParamCurve, Point, Shape};
 use smallvec::{SmallVec, smallvec};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 /// The function supplied to a shading.
 #[derive(Debug, Clone)]
@@ -146,6 +147,7 @@ pub struct Shading {
     /// The background color of the shading.
     pub background: Option<SmallVec<[f32; 4]>>,
     pub(crate) mesh_bounds: Option<kurbo::Rect>,
+    patch_triangles: Arc<PatchTriangles>,
 }
 
 impl Shading {
@@ -158,13 +160,45 @@ impl Shading {
         })
     }
 
+    /// Call `f` with the triangles approximating a coons or tensor-product patch mesh. They're
+    /// kept from the second time they're needed (another tile, or the mesh drawn again), so
+    /// that meshes drawn once don't hold on to them.
+    pub(crate) fn with_patch_triangles<R>(&self, f: impl FnOnce(&[Triangle]) -> R) -> R {
+        let triangulate = || {
+            let mut triangles = vec![];
+            match self.shading_type.as_ref() {
+                ShadingType::CoonsPatchMesh { patches, .. } => {
+                    for patch in patches {
+                        patch.to_triangles(&mut triangles);
+                    }
+                }
+                ShadingType::TensorProductPatchMesh { patches, .. } => {
+                    for patch in patches {
+                        patch.to_triangles(&mut triangles);
+                    }
+                }
+                _ => {}
+            }
+
+            triangles
+        };
+
+        let kept = &self.patch_triangles;
+        if let Some(triangles) = kept.triangles.get() {
+            f(triangles)
+        } else if !kept.seen.swap(true, Ordering::Relaxed) {
+            f(&triangulate())
+        } else {
+            f(kept.triangles.get_or_init(triangulate))
+        }
+    }
+
     fn new_uncached(
         dict: &Dict<'_>,
         stream: Option<&Stream<'_>>,
         cache: &Cache,
         cache_key: u128,
     ) -> Option<Self> {
-
         let shading_num = dict.get::<u8>(SHADING_TYPE)?;
 
         let color_space = ColorSpace::new(dict.get(COLORSPACE)?, cache)?;
@@ -333,6 +367,7 @@ impl Shading {
             clip_path: bbox.map(|r| r.to_path(0.1)),
             background,
             mesh_bounds,
+            patch_triangles: Arc::default(),
         })
     }
 }
@@ -772,6 +807,7 @@ where
 {
     const GRID_SIZE: usize = 20;
     let mut grid = vec![vec![Point::ZERO; GRID_SIZE]; GRID_SIZE];
+    let mut colors = vec![vec![ColorComponents::new(); GRID_SIZE]; GRID_SIZE];
 
     // Create grid by mapping unit square coordinates.
     for i in 0..GRID_SIZE {
@@ -782,6 +818,7 @@ where
             // Map unit square coordinate to patch coordinate.
             let unit_point = Point::new(u, v);
             grid[i][j] = map_coordinate(unit_point);
+            colors[i][j] = interpolate(unit_point);
         }
     }
 
@@ -792,32 +829,26 @@ where
             let p01 = grid[i][j + 1];
             let p11 = grid[i + 1][j + 1];
 
-            // Calculate unit square coordinates for color interpolation.
-            let u0 = i as f64 / (GRID_SIZE - 1) as f64;
-            let u1 = (i + 1) as f64 / (GRID_SIZE - 1) as f64;
-            let v0 = j as f64 / (GRID_SIZE - 1) as f64;
-            let v1 = (j + 1) as f64 / (GRID_SIZE - 1) as f64;
-
             // Create triangle vertices with interpolated colors.
             let v00 = TriangleVertex {
                 flag: 0,
                 point: p00,
-                colors: interpolate(Point::new(u0, v0)),
+                colors: colors[i][j].clone(),
             };
             let v10 = TriangleVertex {
                 flag: 0,
                 point: p10,
-                colors: interpolate(Point::new(u1, v0)),
+                colors: colors[i + 1][j].clone(),
             };
             let v01 = TriangleVertex {
                 flag: 0,
                 point: p01,
-                colors: interpolate(Point::new(u0, v1)),
+                colors: colors[i][j + 1].clone(),
             };
             let v11 = TriangleVertex {
                 flag: 0,
                 point: p11,
-                colors: interpolate(Point::new(u1, v1)),
+                colors: colors[i + 1][j + 1].clone(),
             };
 
             let inflate_point = |p: Point, mid: Point| -> Point {
@@ -1126,4 +1157,11 @@ fn points_bbox(points: &[Point]) -> kurbo::Rect {
         .fold(kurbo::Rect::from_points(points[0], points[0]), |bbox, p| {
             bbox.union_pt(*p)
         })
+}
+
+/// The triangles of a patch mesh, once it has been drawn twice.
+#[derive(Debug, Default)]
+struct PatchTriangles {
+    seen: AtomicBool,
+    triangles: OnceLock<Vec<Triangle>>,
 }
