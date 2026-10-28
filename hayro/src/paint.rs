@@ -45,13 +45,15 @@ impl Renderer<'_> {
                         self.ctx.height() as f64,
                     ))
                 };
+                // Textures only need to cover what the clips let through.
+                let visible = trim(bbox, self.visible());
 
                 match *p {
                     Pattern::Shading(s) => {
                         const NATIVE_GRADIENT_TOLERANCE: f32 = 0.01;
 
                         clip_path = s.shading.clip_path.clone();
-                        let encoded = s.encode_within(bbox.inflate(1.0, 1.0));
+                        let encoded = s.encode_within(visible.inflate(1.0, 1.0));
 
                         if let EncodedShadingType::RadialAxial(gradient) = &encoded.shading_type
                             && let Some(native) =
@@ -93,11 +95,11 @@ impl Renderer<'_> {
 
                             PaintType::Gradient(gradient)
                         } else {
-                            let (width, height) = texture_dimensions(bbox, 1.0);
+                            let (width, height) = texture_dimensions(visible, 1.0);
                             let mut image = Vec::with_capacity(width as usize * height as usize);
                             let mut may_have_transparency = false;
                             let (width, height, transform) =
-                                encoded.sample_texture(bbox, 1.0, |sample| {
+                                encoded.sample_texture(visible, 1.0, |sample| {
                                     let pixel =
                                         AlphaColor::<Srgb>::new(sample).premultiply().to_rgba8();
                                     may_have_transparency |= pixel.a != 255;
@@ -129,7 +131,7 @@ impl Renderer<'_> {
                         }
                     }
                     Pattern::Tiling(t) => {
-                        let (image, transform) = self.tiling_paint(&t, bbox, is_stroke);
+                        let (image, transform) = self.tiling_paint(&t, bbox, visible, is_stroke);
                         paint_transform = path_transform.inverse() * transform;
 
                         PaintType::Image(image)
@@ -143,4 +145,16 @@ impl Renderer<'_> {
 
         clip_path
     }
+}
+
+/// `bbox` without the whole pixels along each side that lie outside `visible`, so that what's
+/// left keeps its place on the pixel grid.
+fn trim(bbox: Rect, visible: Rect) -> Rect {
+    let outside = |by: f64| by.max(0.0).floor();
+    let x0 = bbox.x0 + outside(visible.x0 - bbox.x0);
+    let y0 = bbox.y0 + outside(visible.y0 - bbox.y0);
+    let x1 = bbox.x1 - outside(bbox.x1 - visible.x1);
+    let y1 = bbox.y1 - outside(bbox.y1 - visible.y1);
+
+    Rect::new(x0, y0, x1.max(x0), y1.max(y0))
 }

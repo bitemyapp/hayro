@@ -12,21 +12,25 @@ impl Renderer<'_> {
         &self,
         t: &TilingPattern<'_>,
         area: Rect,
+        visible: Rect,
         is_stroke: bool,
     ) -> (Image, Affine) {
         let area = t.matrix.inverse().transform_rect_bbox(area);
+        let visible = t.matrix.inverse().transform_rect_bbox(visible);
         let (x_advance, y_advance) = x_y_advances(&t.matrix);
         let x = TileAxis::new(
             x_advance.length(),
             t.bbox.x0..t.bbox.x1,
             t.x_step,
             area.x0..area.x1,
+            visible.x0..visible.x1,
         );
         let y = TileAxis::new(
             y_advance.length(),
             t.bbox.y0..t.bbox.y1,
             t.y_step,
             area.y0..area.y1,
+            visible.y0..visible.y1,
         );
 
         let image = Image {
@@ -83,7 +87,8 @@ struct TileAxis {
 }
 
 impl TileAxis {
-    fn new(scale: f64, cell: Range<f64>, step: f32, area: Range<f64>) -> Self {
+    /// `area` is what the pattern fills, `seen` the part of it that can be seen.
+    fn new(scale: f64, cell: Range<f64>, step: f32, area: Range<f64>, seen: Range<f64>) -> Self {
         let step = f64::from(step.abs());
         let width = cell.end - cell.start;
         let visible = (area.end - area.start).max(0.0);
@@ -101,6 +106,9 @@ impl TileAxis {
                 extend: peniko::Extend::Repeat,
             }
         } else {
+            // Without repeating, the texture only covers what can be seen.
+            let start = seen.start.max(area.start);
+            let area = start..seen.end.min(area.end).max(start);
             let start = cell.start + ((area.start - cell.start) * scale).floor() / scale;
 
             Self {

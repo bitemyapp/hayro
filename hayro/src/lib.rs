@@ -97,6 +97,8 @@ pub(crate) struct Renderer<'a> {
     pub(crate) inside_pattern: bool,
     pub(crate) soft_mask_cache: FxHashMap<u128, Mask>,
     pub(crate) in_type3_glyph: bool,
+    /// The device-space bounds of the render target within each active clip, outermost first.
+    pub(crate) clip_bounds: Vec<Rect>,
 }
 
 impl<'r> Renderer<'r> {
@@ -107,12 +109,13 @@ impl<'r> Renderer<'r> {
             inside_pattern: false,
             soft_mask_cache: FxHashMap::default(),
             in_type3_glyph: false,
+            clip_bounds: Vec::new(),
         }
     }
 
+    /// Whether nothing within `bbox`, in device space, could be seen.
     fn misses_target(&self, bbox: Rect) -> bool {
-        let target = Rect::new(0.0, 0.0, self.ctx.width() as f64, self.ctx.height() as f64);
-        !bbox.overlaps(target)
+        !bbox.overlaps(self.visible())
     }
 
     fn child_context(&self, width: u16, height: u16) -> RenderContext {
@@ -316,6 +319,7 @@ pub fn render_into<'a>(
 
     if clip_crop_box {
         device.ctx.set_transform(transform);
+        device.push_clip_bounds(transform.transform_rect_bbox(crop_box));
         device.ctx.push_clip_rect(&crop_box);
     }
 

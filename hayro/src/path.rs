@@ -78,6 +78,10 @@ impl Renderer<'_> {
     }
 
     pub(super) fn fill_path(&mut self, path: &BezPath, props: DrawProps<'_>, fill_rule: FillRule) {
+        if self.misses_target(props.transform.transform_rect_bbox(path.control_box())) {
+            return;
+        }
+
         self.ctx.set_fill_rule(convert_fill_rule(fill_rule));
         self.apply_draw_props(&props);
 
@@ -122,6 +126,10 @@ impl Renderer<'_> {
     ) {
         match draw_mode {
             DrawMode::Fill(fill_rule) => {
+                if self.misses_target(props.transform.transform_rect_bbox(*rect)) {
+                    return;
+                }
+
                 self.ctx.set_fill_rule(convert_fill_rule(*fill_rule));
                 self.apply_draw_props(&props);
 
