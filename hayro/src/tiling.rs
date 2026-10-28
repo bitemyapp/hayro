@@ -1,20 +1,76 @@
 use crate::Renderer;
-use hayro_interpret::pattern::TilingPattern;
+use crate::paint::trim;
+use hayro_interpret::pattern::{Pattern, TilingPattern};
 use hayro_interpret::util::x_y_advances;
-use kurbo::{Affine, Rect};
+use hayro_interpret::{BlendMode, ClipPath, DrawProps, FillRule, Paint};
+use kurbo::{Affine, BezPath, Rect, Shape};
 use std::ops::{Range, RangeInclusive};
 use std::sync::Arc;
 use vello_cpu::peniko::{ImageQuality, ImageSampler};
 use vello_cpu::{Image, ImageSource, Pixmap, peniko};
 
+/// Fills showing at most this many copies of a pattern's cell draw them directly: more would
+/// interpret the cell again for each, where a texture interprets it once.
+const MAX_DIRECT_COPIES: usize = 1;
+
 impl Renderer<'_> {
-    pub(crate) fn tiling_paint(
-        &self,
-        t: &TilingPattern<'_>,
-        area: Rect,
-        visible: Rect,
-        is_stroke: bool,
-    ) -> (Image, Affine) {
+    /// Fill `path`, in the space of `props.transform`, with a tiling pattern by drawing the
+    /// copies of its cell within it directly, rather than through a texture, when only a few
+    /// can be seen and nothing applies to the fill as a whole. Returns whether it did. Drawn at
+    /// device resolution, the cell's lines get the minimum width other lines get.
+    pub(crate) fn fill_tiling_directly(
+        &mut self,
+        path: &BezPath,
+        props: &DrawProps<'_>,
+        fill_rule: FillRule,
+    ) -> bool {
+        let Paint::Pattern(pattern) = &props.paint else {
+            return false;
+        };
+        let Pattern::Tiling(t) = pattern.as_ref() else {
+            return false;
+        };
+        if props.soft_mask.is_some() || props.blend_mode != BlendMode::Normal {
+            return false;
+        }
+
+        let path = props.transform * path.clone();
+        let target = Rect::new(0.0, 0.0, self.ctx.width() as f64, self.ctx.height() as f64);
+        let area = path.bounding_box().intersect(target);
+        let (x, y) = self.tile_axes(t, area, trim(area, self.visible()));
+        let copies = x.copies.clone().count() * y.copies.clone().count();
+        if x.extend != peniko::Extend::Pad
+            || y.extend != peniko::Extend::Pad
+            || copies > MAX_DIRECT_COPIES
+        {
+            return false;
+        }
+
+        self.push_clip_path(&ClipPath {
+            path,
+            fill: fill_rule,
+        });
+        if t.opacity < 1.0 {
+            self.ctx.push_layer(None, None, Some(t.opacity), None, None);
+        }
+
+        for j in y.copies.clone() {
+            for i in x.copies.clone() {
+                let offset = Affine::translate((f64::from(i) * x.step, f64::from(j) * y.step));
+                t.interpret(self, t.matrix * offset, false);
+            }
+        }
+
+        if t.opacity < 1.0 {
+            self.ctx.pop_layer();
+        }
+        self.pop_clip();
+
+        true
+    }
+
+    /// The pattern's axes, for filling `area` of which `visible` can be seen (device space).
+    fn tile_axes(&self, t: &TilingPattern<'_>, area: Rect, visible: Rect) -> (TileAxis, TileAxis) {
         let area = t.matrix.inverse().transform_rect_bbox(area);
         let visible = t.matrix.inverse().transform_rect_bbox(visible);
         let (x_advance, y_advance) = x_y_advances(&t.matrix);
@@ -32,6 +88,18 @@ impl Renderer<'_> {
             area.y0..area.y1,
             visible.y0..visible.y1,
         );
+
+        (x, y)
+    }
+
+    pub(crate) fn tiling_paint(
+        &self,
+        t: &TilingPattern<'_>,
+        area: Rect,
+        visible: Rect,
+        is_stroke: bool,
+    ) -> (Image, Affine) {
+        let (x, y) = self.tile_axes(t, area, visible);
 
         let image = Image {
             image: ImageSource::Pixmap(Arc::new(self.render_tiling(t, &x, &y, is_stroke))),

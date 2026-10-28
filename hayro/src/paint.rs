@@ -149,7 +149,7 @@ impl Renderer<'_> {
 
 /// `bbox` without the whole pixels along each side that lie outside `visible`, so that what's
 /// left keeps its place on the pixel grid.
-fn trim(bbox: Rect, visible: Rect) -> Rect {
+pub(crate) fn trim(bbox: Rect, visible: Rect) -> Rect {
     let outside = |by: f64| by.max(0.0).floor();
     let x0 = bbox.x0 + outside(visible.x0 - bbox.x0);
     let y0 = bbox.y0 + outside(visible.y0 - bbox.y0);

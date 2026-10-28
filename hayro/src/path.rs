@@ -82,6 +82,10 @@ impl Renderer<'_> {
             return;
         }
 
+        if self.fill_tiling_directly(path, &props, fill_rule) {
+            return;
+        }
+
         self.ctx.set_fill_rule(convert_fill_rule(fill_rule));
         self.apply_draw_props(&props);
 
@@ -127,6 +131,10 @@ impl Renderer<'_> {
         match draw_mode {
             DrawMode::Fill(fill_rule) => {
                 if self.misses_target(props.transform.transform_rect_bbox(*rect)) {
+                    return;
+                }
+
+                if self.fill_tiling_directly(&rect.to_path(0.1), &props, *fill_rule) {
                     return;
                 }
 
