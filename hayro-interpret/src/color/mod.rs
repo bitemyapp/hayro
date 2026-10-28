@@ -263,6 +263,14 @@ pub struct ColorSpace(Arc<ColorSpaceType>);
 impl ColorSpace {
     /// Create a new color space from the given object.
     pub(crate) fn new(object: Object<'_>, cache: &Cache) -> Option<Self> {
+        // Color spaces given by arrays are shared, so that lookup tables built from their
+        // functions or other color spaces are only computed once.
+        if matches!(object, Object::Array(_)) {
+            return cache.get_or_insert_with(object.cache_key(), || {
+                Some(Self(Arc::new(ColorSpaceType::new(object, cache)?)))
+            });
+        }
+
         Some(Self(Arc::new(ColorSpaceType::new(object, cache)?)))
     }
 

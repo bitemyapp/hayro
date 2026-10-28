@@ -6,7 +6,7 @@ use crate::CacheKey;
 use crate::cache::Cache;
 use crate::color::{ColorComponents, ColorSpace};
 use crate::function::{Function, interpolate};
-use crate::util::{Float32Ext, PointExt, RectExt};
+use crate::util::{Float32Ext, PointExt, RectExt, hash128};
 use hayro_syntax::bit_reader::BitReader;
 use hayro_syntax::object::Array;
 use hayro_syntax::object::Dict;
@@ -151,6 +151,19 @@ pub struct Shading {
 impl Shading {
     pub(crate) fn new(dict: &Dict<'_>, stream: Option<&Stream<'_>>, cache: &Cache) -> Option<Self> {
         let cache_key = stream.map_or_else(|| dict.cache_key(), |s| s.cache_key());
+
+        // Shadings are parsed once, with their functions and meshes.
+        cache.get_or_insert_with(hash128(&(cache_key, "shading")), || {
+            Self::new_uncached(dict, stream, cache, cache_key)
+        })
+    }
+
+    fn new_uncached(
+        dict: &Dict<'_>,
+        stream: Option<&Stream<'_>>,
+        cache: &Cache,
+        cache_key: u128,
+    ) -> Option<Self> {
 
         let shading_num = dict.get::<u8>(SHADING_TYPE)?;
 
