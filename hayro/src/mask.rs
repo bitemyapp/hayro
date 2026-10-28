@@ -67,9 +67,6 @@ fn draw_soft_mask(
     } else {
         visible
     };
-    let (x0, y0) = (region.x0 as usize, region.y0 as usize);
-    let region_width = region.width() as usize;
-
     let mut values = draw_region(mask, settings, region, global);
     let mut outside = [background(mask, settings)];
 
@@ -78,11 +75,19 @@ fn draw_soft_mask(
         transfer_function.apply_to(&mut outside);
     }
 
+    placed(values, region, outside[0], width, height)
+}
+
+/// A mask of `width` by `height` with `values` in `region` (whole pixels within it, row by
+/// row) and `outside` elsewhere.
+pub(crate) fn placed(values: Vec<u8>, region: Rect, outside: u8, width: u16, height: u16) -> Mask {
     if values.len() == usize::from(width) * usize::from(height) {
         return Mask::from_parts(values, width, height);
     }
 
-    let mut all = vec![outside[0]; usize::from(width) * usize::from(height)];
+    let (x0, y0) = (region.x0 as usize, region.y0 as usize);
+    let region_width = region.width() as usize;
+    let mut all = vec![outside; usize::from(width) * usize::from(height)];
     if region_width > 0 {
         for (row, values) in values.chunks_exact(region_width).enumerate() {
             let start = (y0 + row) * usize::from(width) + x0;

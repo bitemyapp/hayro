@@ -10,7 +10,7 @@ use pic_scale::{
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 use vello_cpu::peniko::{Compose, Fill, ImageQuality, ImageSampler, Mix};
-use vello_cpu::{Image, ImageSource, Mask, PixelMetadata, Pixmap, peniko};
+use vello_cpu::{Image, ImageSource, PixelMetadata, Pixmap, peniko};
 
 // Previously, we used `CatmullRom`. The problem with that one is that it
 // can have negative weights. If we pass a premultiplied buffer to
@@ -711,13 +711,23 @@ impl Renderer<'_> {
                                 }
                             }
                             Paint::Pattern(_) => {
-                                let (width, height) = (self.ctx.width(), self.ctx.height());
                                 let stencil_rect = Rect::new(
                                     0.0,
                                     0.0,
                                     stencil.width as f64,
                                     stencil.height as f64,
                                 );
+                                // The stencil only needs drawing where it can be seen, in whole pixels.
+                                let region = transform
+                                    .transform_rect_bbox(stencil_rect)
+                                    .expand()
+                                    .inflate(1.0, 1.0)
+                                    .intersect(self.visible());
+                                let (width, height) =
+                                    (region.width() as u16, region.height() as u16);
+                                if width == 0 || height == 0 {
+                                    return;
+                                }
                                 let mask_pix = {
                                     let rgb_bytes = ImageData::Rgb(RgbData {
                                         data: vec![
@@ -734,7 +744,9 @@ impl Renderer<'_> {
                                     let mut ctx = self.child_context(width, height);
                                     let mut sub_renderer = Renderer::new(&mut ctx, self.global);
                                     let mut sub_pix = Pixmap::new(width, height);
-                                    sub_renderer.ctx.set_transform(transform);
+                                    sub_renderer.ctx.set_transform(
+                                        Affine::translate((-region.x0, -region.y0)) * transform,
+                                    );
                                     sub_renderer.draw_image(rgb_bytes, Some(stencil));
                                     sub_renderer.ctx.flush();
                                     let mut resources = vello_cpu::Resources::default();
@@ -746,10 +758,12 @@ impl Renderer<'_> {
                                     None,
                                     Some(self.ctx.blend_mode()),
                                     None,
-                                    Some(Mask::from_parts(
+                                    Some(crate::mask::placed(
                                         crate::mask::luminance(&mask_pix),
-                                        mask_pix.width(),
-                                        mask_pix.height(),
+                                        region,
+                                        0,
+                                        self.ctx.width(),
+                                        self.ctx.height(),
                                     )),
                                     None,
                                 );
