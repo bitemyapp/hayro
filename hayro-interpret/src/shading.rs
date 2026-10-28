@@ -20,7 +20,7 @@ use hayro_syntax::object::dict::keys::{
 use kurbo::{Affine, BezPath, CubicBez, ParamCurve, Point, Shape};
 use smallvec::{SmallVec, smallvec};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex};
 
 /// The function supplied to a shading.
 #[derive(Debug, Clone)]
@@ -160,21 +160,31 @@ impl Shading {
         })
     }
 
-    /// Call `f` with the triangles approximating a coons or tensor-product patch mesh. They're
-    /// kept from the second time they're needed (another tile, or the mesh drawn again), so
-    /// that meshes drawn once don't hold on to them.
-    pub(crate) fn with_patch_triangles<R>(&self, f: impl FnOnce(&[Triangle]) -> R) -> R {
+    /// Call `f` with the triangles approximating a coons or tensor-product patch mesh drawn
+    /// under `transform`, each patch cut into cells of about two device pixels. They're kept
+    /// from the second time they're needed at a scale (another tile, or the mesh drawn again),
+    /// so that meshes drawn once don't hold on to them.
+    pub(crate) fn with_patch_triangles<R>(
+        &self,
+        transform: Affine,
+        f: impl FnOnce(&[Triangle]) -> R,
+    ) -> R {
+        let [a, b, c, d, _, _] = transform.as_coeffs();
+        let scale = [a, b, c, d];
+
         let triangulate = || {
             let mut triangles = vec![];
             match self.shading_type.as_ref() {
                 ShadingType::CoonsPatchMesh { patches, .. } => {
                     for patch in patches {
-                        patch.to_triangles(&mut triangles);
+                        let cells = patch_cells(&patch.control_points, transform);
+                        patch.to_triangles_with(cells, &mut triangles);
                     }
                 }
                 ShadingType::TensorProductPatchMesh { patches, .. } => {
                     for patch in patches {
-                        patch.to_triangles(&mut triangles);
+                        let cells = patch_cells(&patch.control_points, transform);
+                        patch.to_triangles_with(cells, &mut triangles);
                     }
                 }
                 _ => {}
@@ -184,12 +194,22 @@ impl Shading {
         };
 
         let kept = &self.patch_triangles;
-        if let Some(triangles) = kept.triangles.get() {
-            f(triangles)
+        let cached = kept
+            .triangles
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|(kept_scale, _)| *kept_scale == scale)
+            .map(|(_, triangles)| triangles.clone());
+
+        if let Some(triangles) = cached {
+            f(&triangles)
         } else if !kept.seen.swap(true, Ordering::Relaxed) {
             f(&triangulate())
         } else {
-            f(kept.triangles.get_or_init(triangulate))
+            let triangles = Arc::new(triangulate());
+            *kept.triangles.lock().unwrap() = Some((scale, triangles.clone()));
+            f(&triangles)
         }
     }
 
@@ -533,7 +553,17 @@ impl CoonsPatch {
 
     /// Approximate the patch by triangles.
     pub fn to_triangles(&self, buffer: &mut Vec<Triangle>) {
-        generate_patch_triangles(|p| self.map_coordinate(p), |p| self.interpolate(p), buffer);
+        self.to_triangles_with(MAX_PATCH_CELLS, buffer);
+    }
+
+    /// Approximate the patch with a grid of `cells` by `cells`.
+    pub(crate) fn to_triangles_with(&self, cells: usize, buffer: &mut Vec<Triangle>) {
+        generate_patch_triangles(
+            |p| self.map_coordinate(p),
+            |p| self.interpolate(p),
+            cells,
+            buffer,
+        );
     }
 
     /// Get the interpolated colors of the point from the patch.
@@ -617,7 +647,17 @@ impl TensorProductPatch {
 
     /// Approximate the tensor product patch mesh by triangles.
     pub fn to_triangles(&self, buffer: &mut Vec<Triangle>) {
-        generate_patch_triangles(|p| self.map_coordinate(p), |p| self.interpolate(p), buffer);
+        self.to_triangles_with(MAX_PATCH_CELLS, buffer);
+    }
+
+    /// Approximate the patch with a grid of `cells` by `cells`.
+    pub(crate) fn to_triangles_with(&self, cells: usize, buffer: &mut Vec<Triangle>) {
+        generate_patch_triangles(
+            |p| self.map_coordinate(p),
+            |p| self.interpolate(p),
+            cells,
+            buffer,
+        );
     }
 
     /// Get the interpolated colors of the point from the patch.
@@ -799,21 +839,28 @@ fn split_decode(decode: &[f32]) -> Option<([f32; 4], &[f32])> {
     decode.split_first_chunk::<4>().map(|(a, b)| (*a, b))
 }
 
-/// Generate triangles from a grid of points using a mapping function.
-fn generate_patch_triangles<F, I>(map_coordinate: F, interpolate: I, buffer: &mut Vec<Triangle>)
-where
+/// The cells along each side of a patch's grid, at most.
+pub(crate) const MAX_PATCH_CELLS: usize = 19;
+
+/// Generate triangles from a grid of `cells` by `cells` over a patch, using a mapping function.
+fn generate_patch_triangles<F, I>(
+    map_coordinate: F,
+    interpolate: I,
+    cells: usize,
+    buffer: &mut Vec<Triangle>,
+) where
     F: Fn(Point) -> Point,
     I: Fn(Point) -> ColorComponents,
 {
-    const GRID_SIZE: usize = 20;
-    let mut grid = vec![vec![Point::ZERO; GRID_SIZE]; GRID_SIZE];
-    let mut colors = vec![vec![ColorComponents::new(); GRID_SIZE]; GRID_SIZE];
+    let grid_size = cells.clamp(1, MAX_PATCH_CELLS) + 1;
+    let mut grid = vec![vec![Point::ZERO; grid_size]; grid_size];
+    let mut colors = vec![vec![ColorComponents::new(); grid_size]; grid_size];
 
     // Create grid by mapping unit square coordinates.
-    for i in 0..GRID_SIZE {
-        for j in 0..GRID_SIZE {
-            let u = i as f64 / (GRID_SIZE - 1) as f64; // 0.0 to 1.0 (left to right).
-            let v = j as f64 / (GRID_SIZE - 1) as f64; // 0.0 to 1.0 (top to bottom).
+    for i in 0..grid_size {
+        for j in 0..grid_size {
+            let u = i as f64 / (grid_size - 1) as f64; // 0.0 to 1.0 (left to right).
+            let v = j as f64 / (grid_size - 1) as f64; // 0.0 to 1.0 (top to bottom).
 
             // Map unit square coordinate to patch coordinate.
             let unit_point = Point::new(u, v);
@@ -822,8 +869,8 @@ where
         }
     }
 
-    for i in 0..(GRID_SIZE - 1) {
-        for j in 0..(GRID_SIZE - 1) {
+    for i in 0..(grid_size - 1) {
+        for j in 0..(grid_size - 1) {
             let p00 = grid[i][j];
             let p10 = grid[i + 1][j];
             let p01 = grid[i][j + 1];
@@ -1159,9 +1206,29 @@ fn points_bbox(points: &[Point]) -> kurbo::Rect {
         })
 }
 
-/// The triangles of a patch mesh, once it has been drawn twice.
+/// Triangles, with the linear part of the transform they were made for.
+type KeptTriangles = ([f64; 4], Arc<Vec<Triangle>>);
+
+/// The triangles of a patch mesh, once it has been drawn twice at a scale.
 #[derive(Debug, Default)]
 struct PatchTriangles {
     seen: AtomicBool,
-    triangles: OnceLock<Vec<Triangle>>,
+    triangles: Mutex<Option<KeptTriangles>>,
+}
+
+/// The cells along each side of the grid a patch is cut into under `transform`: about two
+/// device pixels each, so that small patches aren't cut into hundreds of triangles.
+fn patch_cells(control_points: &[Point], transform: Affine) -> usize {
+    let first = kurbo::Rect::from_points(control_points[0], control_points[0]);
+    let bounds = control_points[1..]
+        .iter()
+        .fold(first, |bounds, point| bounds.union_pt(*point));
+    let bounds = transform.transform_rect_bbox(bounds);
+    let extent = bounds.width().max(bounds.height());
+
+    if extent.is_finite() {
+        ((extent / 2.0).ceil() as usize).clamp(1, MAX_PATCH_CELLS)
+    } else {
+        MAX_PATCH_CELLS
+    }
 }

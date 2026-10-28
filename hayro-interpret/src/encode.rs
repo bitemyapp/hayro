@@ -255,9 +255,11 @@ impl ShadingPattern {
             }
             ShadingType::CoonsPatchMesh { function, .. } => {
                 let full_transform = self.matrix;
-                let samples = self.shading.with_patch_triangles(|triangles| {
-                    sample_triangles(triangles, full_transform, target)
-                });
+                let samples = self
+                    .shading
+                    .with_patch_triangles(full_transform, |triangles| {
+                        sample_triangles(triangles, full_transform, target)
+                    });
 
                 base_transform = Affine::IDENTITY;
 
@@ -268,9 +270,11 @@ impl ShadingPattern {
             }
             ShadingType::TensorProductPatchMesh { function, .. } => {
                 let full_transform = self.matrix;
-                let samples = self.shading.with_patch_triangles(|triangles| {
-                    sample_triangles(triangles, full_transform, target)
-                });
+                let samples = self
+                    .shading
+                    .with_patch_triangles(full_transform, |triangles| {
+                        sample_triangles(triangles, full_transform, target)
+                    });
 
                 base_transform = Affine::IDENTITY;
 
