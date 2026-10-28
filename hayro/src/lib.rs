@@ -97,8 +97,8 @@ pub(crate) struct Renderer<'a> {
     pub(crate) inside_pattern: bool,
     pub(crate) soft_mask_cache: FxHashMap<(u128, [u16; 4]), Mask>,
     pub(crate) in_type3_glyph: bool,
-    /// The device-space bounds of the render target within each active clip, outermost first.
-    pub(crate) clip_bounds: Vec<Rect>,
+    /// The active clips, outermost first.
+    pub(crate) clips: Vec<clip::Clip>,
 }
 
 impl<'r> Renderer<'r> {
@@ -109,7 +109,7 @@ impl<'r> Renderer<'r> {
             inside_pattern: false,
             soft_mask_cache: FxHashMap::default(),
             in_type3_glyph: false,
-            clip_bounds: Vec::new(),
+            clips: Vec::new(),
         }
     }
 
@@ -319,7 +319,7 @@ pub fn render_into<'a>(
 
     if clip_crop_box {
         device.ctx.set_transform(transform);
-        device.push_clip_bounds(transform.transform_rect_bbox(crop_box));
+        device.push_clip_bounds(transform.transform_rect_bbox(crop_box), true);
         device.ctx.push_clip_rect(&crop_box);
     }
 

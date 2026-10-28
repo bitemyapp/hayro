@@ -68,6 +68,23 @@ impl Drawn {
         }
     }
 
+    /// The device-space bounds of the drawing under `transform`.
+    fn bounds(&self, transform: Affine) -> Rect {
+        match self {
+            Self::Pixmap {
+                pixmap,
+                transform: drawn,
+                ..
+            } => (transform * *drawn).transform_rect_bbox(Rect::new(
+                0.0,
+                0.0,
+                pixmap.width() as f64,
+                pixmap.height() as f64,
+            )),
+            Self::Masked { image, .. } => image.bounds(transform),
+        }
+    }
+
     /// The same drawing, for an image space mapped by `transform`.
     fn within(self, transform: Affine) -> Self {
         match self {
@@ -204,12 +221,12 @@ impl Renderer<'_> {
                 transform: drawn,
             } => self.draw_pixmap(pixmap, quality, transform * drawn),
             Drawn::Masked { image, mask } => {
-                self.ctx.push_layer(None, None, None, None, None);
+                let clip = self.layer_clip(image.bounds(transform));
+                self.push_layer_within(clip.as_ref(), None, None, None);
                 self.redraw(*image, transform);
-                self.ctx.push_layer(
+                self.push_layer_within(
                     None,
                     Some(peniko::BlendMode::new(Mix::Normal, Compose::DestIn)),
-                    None,
                     None,
                     None,
                 );
@@ -241,14 +258,19 @@ impl Renderer<'_> {
             interpolate: alpha_data.interpolate,
         };
 
-        self.ctx.push_layer(None, None, None, None, None);
+        let clip = self.layer_clip(image_transform.transform_rect_bbox(Rect::new(
+            0.0,
+            0.0,
+            img_width as f64,
+            img_height as f64,
+        )));
+        self.push_layer_within(clip.as_ref(), None, None, None);
         self.ctx.set_transform(image_transform);
         let image = self.draw_image(image_data, None);
 
-        self.ctx.push_layer(
+        self.push_layer_within(
             None,
             Some(peniko::BlendMode::new(Mix::Normal, Compose::DestIn)),
-            None,
             None,
             None,
         );
