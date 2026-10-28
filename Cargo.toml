@@ -53,7 +53,8 @@ yoke = { version = "0.8" }
 pdf-writer = { version = "0.15" }
 xmlwriter = { version = "0.1" }
 base64 = { version = "0.22" }
-zune-jpeg = { version = "0.5", default-features = false }
+# Decodes at reduced sizes (jpeg_set_scale_denominator); not yet in a release.
+zune-jpeg = { git = "https://github.com/bitemyapp/zune-image", branch = "scaled-idct", default-features = false }
 vello_cpu = { version = "0.3", default-features = false, features = ["std", "png", "u8_pipeline"] }
 pic-scale = { version = "0.7.12", default-features = false }
 fearless_simd = "1.0.0"

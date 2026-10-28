@@ -60,7 +60,12 @@ pub(crate) fn decode(
         out_colorspace = ColorSpace::RGB;
     }
 
-    decoder.set_options(DecoderOptions::default().jpeg_set_out_colorspace(out_colorspace));
+    let (across, down) = scale_denominators(&decoder, image_params);
+    decoder.set_options(
+        DecoderOptions::default()
+            .jpeg_set_out_colorspace(out_colorspace)
+            .jpeg_set_scale_denominators(across, down),
+    );
     let mut decoded = decoder.decode().ok()?;
 
     if out_colorspace == ColorSpace::YCCK {
@@ -75,8 +80,9 @@ pub(crate) fn decode(
         }
     }
 
-    let width = decoder.dimensions().unwrap().0 as u32;
-    let height = decoder.dimensions().unwrap().1 as u32;
+    // Smaller than the image when it was decoded at a reduced scale.
+    let width = decoder.output_dimensions().unwrap().0 as u32;
+    let height = decoder.output_dimensions().unwrap().1 as u32;
 
     let image_data = ImageData {
         alpha: None,
@@ -178,4 +184,30 @@ fn find_sof_marker(data: &[u8]) -> Option<usize> {
     }
 
     None
+}
+
+/// The largest scale denominators (1, 2, 4 or 8), across and down, at which the decoded image is
+/// still half as large again as the size it will be drawn at. The decoder reduces by
+/// averaging, and the renderer then resamples to the drawn size; leaving that last reduction
+/// to the resampler keeps edges as sharp as resampling the full image.
+fn scale_denominators<T: zune_jpeg::zune_core::bytestream::ZByteReaderTrait>(
+    decoder: &zune_jpeg::JpegDecoder<T>,
+    image_params: &ImageDecodeParams,
+) -> (u8, u8) {
+    let (Some((width, height)), Some((target_width, target_height))) =
+        (decoder.dimensions(), image_params.target_dimension)
+    else {
+        return (1, 1);
+    };
+    let denominator = |size: usize, target: u32| {
+        [8_u8, 4, 2]
+            .into_iter()
+            .find(|d| 2 * size.div_ceil(usize::from(*d)) >= 3 * target as usize)
+            .unwrap_or(1)
+    };
+
+    (
+        denominator(width, target_width),
+        denominator(height, target_height),
+    )
 }
