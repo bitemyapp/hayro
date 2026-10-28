@@ -4,6 +4,7 @@ use hayro_syntax::object::Stream;
 use hayro_syntax::reader::Reader;
 use hayro_syntax::reader::{ReaderContext, ReaderExt};
 use std::array;
+use std::cell::RefCell;
 use std::ops::Rem;
 
 /// A type 4 function (postscript function).
@@ -22,27 +23,41 @@ impl Type4 {
 
     /// Evaluate the function with the given input.
     pub(crate) fn eval(&self, input: &[f32], output: &mut [f32]) -> Option<()> {
-        let stack = self.run(input)?;
-        let items = stack.items();
-        let values = &items[items.len().checked_sub(output.len())?..];
-
-        for (output, value) in output.iter_mut().zip(values) {
-            *output = value.as_f32();
+        // Functions are evaluated for every pixel of some shadings and images, so the stack
+        // is reused rather than set up (100 entries) and moved for every evaluation.
+        thread_local! {
+            static STACK: RefCell<InterpreterStack> = RefCell::new(InterpreterStack::new());
         }
 
-        Some(())
+        STACK.with_borrow_mut(|stack| {
+            self.run_on(input, stack)?;
+            let items = stack.items();
+            let values = &items[items.len().checked_sub(output.len())?..];
+
+            for (output, value) in output.iter_mut().zip(values) {
+                *output = value.as_f32();
+            }
+
+            Some(())
+        })
     }
 
+    #[cfg(test)]
     fn run(&self, input: &[f32]) -> Option<InterpreterStack> {
         let mut stack = InterpreterStack::new();
+        self.run_on(input, &mut stack)?;
+
+        Some(stack)
+    }
+
+    fn run_on(&self, input: &[f32], stack: &mut InterpreterStack) -> Option<()> {
+        stack.clear();
 
         for input in input {
             stack.push(Argument::Float(*input))?;
         }
 
-        eval_inner(&self.program, &mut stack)?;
-
-        Some(stack)
+        eval_inner(&self.program, stack)
     }
 }
 
@@ -96,6 +111,11 @@ impl<T: Default, const C: usize> ArgumentsStack<T, C> {
     #[inline]
     fn len(&self) -> usize {
         self.len
+    }
+
+    #[inline]
+    fn clear(&mut self) {
+        self.len = 0;
     }
 
     #[inline]
