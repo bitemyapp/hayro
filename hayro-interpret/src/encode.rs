@@ -133,6 +133,55 @@ impl EncodedShadingPattern {
         scale: f32,
         mut f: impl FnMut([f32; 4]),
     ) -> (u32, u32, Affine) {
+        let mut lut = self.gradient_lut(bbox, scale, |color| color);
+
+        self.for_each_texel(bbox, scale, |point| {
+            f(match &mut lut {
+                Some(lut) => lut.sample(point),
+                None => self.sample(point),
+            });
+        })
+    }
+
+    /// Sample the shading as [`sample_texture`](Self::sample_texture) does, into texels of
+    /// premultiplied RGBA8 (each sample premultiplied and rounded as
+    /// `color::AlphaColor::premultiply` and `PremulColor::to_rgba8` do).
+    pub fn sample_texture_premultiplied(&self, bbox: Rect, scale: f32) -> PremultipliedTexture {
+        let (width, height) = texture_dimensions(bbox, scale);
+        let mut data = Vec::with_capacity(width as usize * height as usize);
+
+        let transform =
+            if let Some(mut lut) = self.gradient_lut(bbox, scale, premultiplied_rgba8) {
+                self.for_each_texel(bbox, scale, |point| data.push(lut.sample(point)))
+            } else if let Some(mut texel) = self.opaque_mesh_texel() {
+                self.for_each_texel(bbox, scale, |point| data.push(texel(point)))
+            } else {
+                self.for_each_texel(bbox, scale, |point| {
+                    data.push(premultiplied_rgba8(self.sample(point)));
+                })
+            }
+            .2;
+
+        let may_have_transparency = data.iter().any(|texel| texel[3] != 255);
+
+        PremultipliedTexture {
+            data,
+            width,
+            height,
+            transform,
+            may_have_transparency,
+        }
+    }
+
+    /// Call `f` with each point of the grid [`sample_texture`](Self::sample_texture)
+    /// samples, in row-major order.
+    #[inline(always)]
+    fn for_each_texel(
+        &self,
+        bbox: Rect,
+        scale: f32,
+        mut f: impl FnMut(Point),
+    ) -> (u32, u32, Affine) {
         let (width, height) = texture_dimensions(bbox, scale);
         let inv_scale = 1.0 / scale as f64;
 
@@ -143,24 +192,11 @@ impl EncodedShadingPattern {
             * Affine::translate((0.5 * inv_scale, 0.5 * inv_scale))
             * Point::new(bbox.x0, bbox.y0);
 
-        let mut lut = match &self.shading_type {
-            EncodedShadingType::RadialAxial(shading)
-                if width as usize * height as usize > GRADIENT_STEPS / 4 =>
-            {
-                Some(GradientLut::new(self, shading))
-            }
-            _ => None,
-        };
-
         for _ in 0..height {
             let mut point = start_point;
 
             for _ in 0..width {
-                f(match &mut lut {
-                    Some(lut) => lut.sample(point),
-                    None => self.sample(point),
-                });
-
+                f(point);
                 point += x_advance;
             }
 
@@ -171,6 +207,59 @@ impl EncodedShadingPattern {
             width,
             height,
             Affine::translate((bbox.x0, bbox.y0)) * Affine::scale(inv_scale),
+        )
+    }
+
+    /// For an axial or radial shading sampled at enough points, its colors along it,
+    /// each converted with `convert`.
+    fn gradient_lut<T: Copy>(
+        &self,
+        bbox: Rect,
+        scale: f32,
+        convert: fn([f32; 4]) -> T,
+    ) -> Option<GradientLut<'_, T>> {
+        let (width, height) = texture_dimensions(bbox, scale);
+        match &self.shading_type {
+            EncodedShadingType::RadialAxial(shading)
+                if width as usize * height as usize > GRADIENT_STEPS / 4 =>
+            {
+                Some(GradientLut::new(self, shading, convert))
+            }
+            _ => None,
+        }
+    }
+
+    /// For a mesh shading of opaque gray or RGB colors without a function, the texel at a
+    /// point, without converting the color to floats and back: the same as
+    /// `premultiplied_rgba8(self.sample(point))`.
+    fn opaque_mesh_texel(&self) -> Option<impl FnMut(Point) -> [u8; 4] + '_> {
+        let EncodedShadingType::Sampled(EncodedSampledShading {
+            samples,
+            function: None,
+        }) = &self.shading_type
+        else {
+            return None;
+        };
+        if self.opacity != 1.0 || self.transfer_function.is_some() {
+            return None;
+        }
+        let gray = if self.color_space.is_device_gray() {
+            true
+        } else if self.color_space.is_device_rgb() {
+            false
+        } else {
+            return None;
+        };
+        let background = premultiplied_rgba8(self.finish(Some(self.background_color)));
+        // As `ColorSpace::to_rgba` quantizes them.
+        let level = |c: &[f32], i: usize| c.get(i).map_or(0, |c| (c * 255.0 + 0.5) as u8);
+
+        Some(
+            move |point: Point| match samples.get((point.x as u16, point.y as u16)) {
+                Some(c) if gray => [level(c, 0), level(c, 0), level(c, 0), 255],
+                Some(c) => [level(c, 0), level(c, 1), level(c, 2), 255],
+                None => background,
+            },
         )
     }
 
@@ -436,26 +525,118 @@ fn for_each_pixel(
     let (d00, d01, d11) = (v0.dot(v0), v0.dot(v1), v1.dot(v1));
     let denom = d00 * d11 - d01 * d01;
 
-    for y in t_ys {
-        for x in t_xs.clone() {
-            let point = Point::new(x as f64, y as f64);
-            if triangle.winding(point) != 0 {
-                let v2 = point - a;
-                let (d20, d21) = (v2.dot(v0), v2.dot(v1));
-                let v = (d11 * d20 - d01 * d21) / denom;
-                let w = (d00 * d21 - d01 * d20) / denom;
-                f(x, y, [(1.0 - v - w) as f32, v as f32, w as f32]);
+    let mut pixel = |x: u16, y: u16| {
+        let v2 = Point::new(x as f64, y as f64) - a;
+        let (d20, d21) = (v2.dot(v0), v2.dot(v1));
+        let v = (d11 * d20 - d01 * d21) / denom;
+        let w = (d00 * d21 - d01 * d20) / denom;
+        f(x, y, [(1.0 - v - w) as f32, v as f32, w as f32]);
+    };
+
+    // Small or degenerate triangles have every pixel tested, as rounding near their corners
+    // could make the side tests disagree in ways `covered_run` doesn't expect.
+    if t_xs.len() <= 8 || v0.cross(v1).abs() < 1.0 {
+        for y in t_ys {
+            for x in t_xs.clone() {
+                if triangle.winding(Point::new(x as f64, y as f64)) != 0 {
+                    pixel(x, y);
+                }
+            }
+        }
+    } else {
+        let edges = Edges::new(&triangle);
+        for y in t_ys {
+            for x in covered_run(&triangle, &edges, y, &t_xs) {
+                pixel(x, y);
             }
         }
     }
 }
 
-/// The color at a point of a triangle, from its vertices' weights there.
-#[inline]
-fn interpolate(t: &Triangle, [u, v, w]: [f32; 3], out: &mut [f32]) {
-    for (i, out) in out.iter_mut().enumerate() {
-        *out = u * t.p0.colors[i] + v * t.p1.colors[i] + w * t.p2.colors[i];
+/// Where a triangle's sloped edges cross a row: each as a point on it, its run per unit of
+/// rise, and whether the triangle lies left of it.
+struct Edges([Option<(Point, f64, bool)>; 3]);
+
+impl Edges {
+    fn new(triangle: &kurbo::Triangle) -> Self {
+        let [a, b, c] = [triangle.a, triangle.b, triangle.c];
+        let orientation = (b - a).cross(c - a);
+        Self([(a, b), (b, c), (c, a)].map(|(p, q)| {
+            let (dx, dy) = (q.x - p.x, q.y - p.y);
+            // The side test decreases along a row where `dy` is positive.
+            (dy != 0.0).then(|| (p, dx / dy, (dy > 0.0) == (orientation > 0.0)))
+        }))
     }
+
+    /// Roughly where the triangle begins and ends along a row.
+    #[inline]
+    fn span(&self, row: f64, xs: &Range<u16>) -> (f64, f64) {
+        let (mut lo, mut hi) = (xs.start as f64, xs.end as f64);
+        for (p, run, left) in self.0.iter().flatten() {
+            let x = p.x + run * (row - p.y);
+            if *left {
+                hi = hi.min(x);
+            } else {
+                lo = lo.max(x);
+            }
+        }
+        (lo, hi)
+    }
+}
+
+/// The pixels within `xs` of row `y` where `triangle.winding` isn't 0, which are one run:
+/// along a row, each of the three side tests it makes is computed as a constant minus a
+/// multiple of `x - a.x`, which is monotonic in `x`, so each changes sign at most once.
+/// Where the edges cross the row gives the run's ends roughly, and the test itself the exact
+/// ends, so that the pixels are those testing every pixel would give.
+fn covered_run(triangle: &kurbo::Triangle, edges: &Edges, y: u16, xs: &Range<u16>) -> Range<u16> {
+    let covered = |x: u16| triangle.winding(Point::new(x as f64, y as f64)) != 0;
+    let (lo, hi) = edges.span(y as f64, xs);
+    let clamp = |x: f64| (x.max(xs.start as f64).min(xs.end as f64 - 1.0)) as u16;
+
+    // Walk from the estimated first pixel to the exact one.
+    let mut start = clamp(lo.ceil());
+    if !covered(start) {
+        match (start + 1..xs.end)
+            .find(|&x| covered(x))
+            .or_else(|| (xs.start..start).rev().find(|&x| covered(x)))
+        {
+            Some(x) => start = x,
+            None => return 0..0,
+        }
+    }
+    while start > xs.start && covered(start - 1) {
+        start -= 1;
+    }
+
+    // And from the estimated last one; `start` is covered, so walking left stops there at the
+    // latest.
+    let mut end = clamp(hi.floor()).max(start);
+    if covered(end) {
+        while end + 1 < xs.end && covered(end + 1) {
+            end += 1;
+        }
+    } else {
+        while !covered(end) {
+            end -= 1;
+        }
+    }
+
+    start..end + 1
+}
+
+/// The color at a point of a triangle, from its vertices' colors and their weights there.
+#[inline]
+fn interpolate([c0, c1, c2]: [&[f32]; 3], [u, v, w]: [f32; 3], out: &mut [f32]) {
+    for (out, ((c0, c1), c2)) in out.iter_mut().zip(c0.iter().zip(c1).zip(c2)) {
+        *out = u * c0 + v * c1 + w * c2;
+    }
+}
+
+/// A triangle's vertex colors.
+#[inline]
+fn colors(t: &Triangle) -> [&[f32]; 3] {
+    [&t.p0.colors, &t.p1.colors, &t.p2.colors].map(|c| c.as_slice())
 }
 
 fn sample_triangles(triangles: &[Triangle], transform: Affine, target: Rect) -> MeshSamples {
@@ -491,9 +672,10 @@ fn sample_triangles(triangles: &[Triangle], transform: Affine, target: Rect) -> 
     let mut covered = vec![false; width * height];
 
     for t in triangles {
+        let colors = colors(t);
         for_each_pixel(t, transform, &xs, &ys, |x, y, weights| {
             let i = (y - y0) as usize * width + (x - x0) as usize;
-            interpolate(t, weights, &mut components[i * stride..][..stride]);
+            interpolate(colors, weights, &mut components[i * stride..][..stride]);
             covered[i] = true;
         });
     }
@@ -520,7 +702,7 @@ fn sample_triangles_sparse(
     for t in triangles {
         for_each_pixel(t, transform, &xs, &ys, |x, y, weights| {
             let mut color = ColorComponents::from_elem(0.0, t.p0.colors.len());
-            interpolate(t, weights, &mut color);
+            interpolate(colors(t), weights, &mut color);
             map.insert((x, y), color);
         });
     }
@@ -548,42 +730,67 @@ fn encode_function_shading(domain: &[f32; 4], function: &ShadingFunction) -> Enc
 const GRADIENT_STEPS: usize = 1 << 16;
 
 /// The colors of an axial or radial shading at evenly spaced positions along it, each
-/// evaluated the first time it's needed.
-struct GradientLut<'a> {
+/// evaluated (and converted) the first time it's needed.
+struct GradientLut<'a, T> {
     pattern: &'a EncodedShadingPattern,
     shading: &'a EncodedRadialAxialShading,
-    /// NaN until evaluated.
-    colors: Vec<[f32; 4]>,
-    background: [f32; 4],
+    convert: fn([f32; 4]) -> T,
+    /// `None` until evaluated.
+    colors: Vec<Option<T>>,
+    background: T,
 }
 
-impl<'a> GradientLut<'a> {
-    fn new(pattern: &'a EncodedShadingPattern, shading: &'a EncodedRadialAxialShading) -> Self {
+impl<'a, T: Copy> GradientLut<'a, T> {
+    fn new(
+        pattern: &'a EncodedShadingPattern,
+        shading: &'a EncodedRadialAxialShading,
+        convert: fn([f32; 4]) -> T,
+    ) -> Self {
         Self {
             pattern,
             shading,
-            colors: vec![[f32::NAN; 4]; GRADIENT_STEPS + 1],
-            background: pattern.finish(Some(pattern.background_color)),
+            convert,
+            colors: vec![None; GRADIENT_STEPS + 1],
+            background: convert(pattern.finish(Some(pattern.background_color))),
         }
     }
 
     #[inline]
-    fn sample(&mut self, pos: Point) -> [f32; 4] {
+    fn sample(&mut self, pos: Point) -> T {
         let Some(t) = self.shading.position(pos) else {
             return self.background;
         };
 
         let i = (t * GRADIENT_STEPS as f32).round() as usize;
-        let color = &mut self.colors[i];
-        if color[3].is_nan() {
+        *self.colors[i].get_or_insert_with(|| {
             let t = i as f32 / GRADIENT_STEPS as f32;
-            *color = self
-                .pattern
-                .finish(self.shading.color_at(t, &self.pattern.color_space));
-        }
-
-        *color
+            (self.convert)(
+                self.pattern
+                    .finish(self.shading.color_at(t, &self.pattern.color_space)),
+            )
+        })
     }
+}
+
+/// A shading sampled into texels of premultiplied RGBA8.
+pub struct PremultipliedTexture {
+    /// The texels, row-major.
+    pub data: Vec<[u8; 4]>,
+    /// The width of the texture in texels.
+    pub width: u32,
+    /// The height of the texture in texels.
+    pub height: u32,
+    /// The transform from texture space to the space of the sampled bounding box.
+    pub transform: Affine,
+    /// Whether any texel isn't fully opaque.
+    pub may_have_transparency: bool,
+}
+
+/// A straight RGBA color premultiplied and rounded to 8 bits, as `color::AlphaColor`'s
+/// `premultiply` and `PremulColor::to_rgba8` do it.
+#[inline(always)]
+fn premultiplied_rgba8([r, g, b, a]: [f32; 4]) -> [u8; 4] {
+    [r * a, g * a, b * a, a].map(|c| (c * 255.0 + 0.5) as u8)
 }
 
 impl EncodedRadialAxialShading {

@@ -1,6 +1,6 @@
 use crate::Renderer;
 use hayro_interpret::Paint;
-use hayro_interpret::encode::{EncodedShadingType, texture_dimensions};
+use hayro_interpret::encode::EncodedShadingType;
 use hayro_interpret::gradient::SvgGradientKind;
 use hayro_interpret::pattern::Pattern;
 use hayro_interpret::util::x_y_advances;
@@ -95,24 +95,15 @@ impl Renderer<'_> {
 
                             PaintType::Gradient(gradient)
                         } else {
-                            let (width, height) = texture_dimensions(visible, 1.0);
-                            let mut image = Vec::with_capacity(width as usize * height as usize);
-                            let mut may_have_transparency = false;
-                            let (width, height, transform) =
-                                encoded.sample_texture(visible, 1.0, |sample| {
-                                    let pixel =
-                                        AlphaColor::<Srgb>::new(sample).premultiply().to_rgba8();
-                                    may_have_transparency |= pixel.a != 255;
-                                    image.push(pixel);
-                                });
-                            paint_transform = path_transform.inverse() * transform;
+                            let texture = encoded.sample_texture_premultiplied(visible, 1.0);
+                            paint_transform = path_transform.inverse() * texture.transform;
 
                             let pixmap = Pixmap::from_parts(
-                                bytemuck::cast_vec(image),
-                                width as u16,
-                                height as u16,
+                                bytemuck::cast_vec(texture.data),
+                                texture.width as u16,
+                                texture.height as u16,
                                 PixelMetadata {
-                                    may_have_transparency,
+                                    may_have_transparency: texture.may_have_transparency,
                                     ..Default::default()
                                 },
                             );
