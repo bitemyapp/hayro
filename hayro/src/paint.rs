@@ -115,12 +115,22 @@ impl Renderer<'_> {
                                 },
                             );
 
+                            // A texture on whole device pixels has a texel at each pixel's
+                            // center, which filtering would only give back.
+                            let [a, b, c, d, e, f] = texture.transform.as_coeffs();
+                            let on_pixels = [a, b, c, d] == [1.0, 0.0, 0.0, 1.0]
+                                && e.fract() == 0.0
+                                && f.fract() == 0.0;
                             let image = Image {
                                 image: ImageSource::Pixmap(Arc::new(pixmap)),
                                 sampler: ImageSampler {
                                     x_extend: peniko::Extend::Repeat,
                                     y_extend: peniko::Extend::Repeat,
-                                    quality: ImageQuality::Medium,
+                                    quality: if on_pixels {
+                                        ImageQuality::Low
+                                    } else {
+                                        ImageQuality::Medium
+                                    },
                                     alpha: 1.0,
                                 },
                             };
