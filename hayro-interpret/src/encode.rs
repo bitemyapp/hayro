@@ -153,8 +153,10 @@ impl EncodedShadingPattern {
         let transform = if let Some(mut lut) = self.gradient_lut(bbox, scale, premultiplied_rgba8) {
             self.for_each_texel(bbox, scale, |point| data.push(lut.sample(point)))
                 .2
-        } else if let Some(transform) = self.opaque_mesh_texels(bbox, scale, &mut data) {
-            transform
+        } else if let Some(texel) = self.opaque_mesh_texel() {
+            self.mesh_texels(bbox, scale, &mut data, texel)
+        } else if let Some(texel) = self.function_mesh_texel() {
+            self.mesh_texels(bbox, scale, &mut data, texel)
         } else {
             self.for_each_texel(bbox, scale, |point| {
                 data.push(premultiplied_rgba8(self.sample(point)));
@@ -239,19 +241,12 @@ impl EncodedShadingPattern {
         }
     }
 
-    /// For a mesh shading of opaque gray or RGB colors without a function, its texels,
-    /// without converting colors to floats and back: the same as
-    /// `premultiplied_rgba8(self.sample(point))` at each point.
-    fn opaque_mesh_texels(
-        &self,
-        bbox: Rect,
-        scale: f32,
-        data: &mut Vec<[u8; 4]>,
-    ) -> Option<Affine> {
-        let EncodedShadingType::Sampled(EncodedSampledShading {
-            samples,
-            function: None,
-        }) = &self.shading_type
+    /// For a mesh shading of opaque gray or RGB colors without a function, the texel of a
+    /// sample, without converting its color to floats and back: the same as
+    /// `premultiplied_rgba8(self.sample(point))` at its point.
+    fn opaque_mesh_texel(&self) -> Option<impl FnMut(&[f32]) -> [u8; 4] + use<>> {
+        let EncodedShadingType::Sampled(EncodedSampledShading { function: None, .. }) =
+            &self.shading_type
         else {
             return None;
         };
@@ -265,15 +260,90 @@ impl EncodedShadingPattern {
         } else {
             return None;
         };
-        let background = premultiplied_rgba8(self.finish(Some(self.background_color)));
         // As `ColorSpace::to_rgba` quantizes them.
         let level = |c: &[f32], i: usize| c.get(i).map_or(0, |c| (c * 255.0 + 0.5) as u8);
-        let texel = |c: &[f32]| match gray {
+
+        Some(move |c: &[f32]| match gray {
             true => [level(c, 0), level(c, 0), level(c, 0), 255],
             false => [level(c, 0), level(c, 1), level(c, 2), 255],
-        };
+        })
+    }
 
+    /// For a mesh shading whose colors are a function's values at one input, the texel of a
+    /// sample from a table of the function at [`GRADIENT_STEPS`] evenly spaced inputs between
+    /// the least and greatest sampled, each evaluated the first time it's needed: a sample's
+    /// input is rounded to a step, which changes its texel by at most a level where the
+    /// function crosses one within the step, as for axial and radial shadings.
+    fn function_mesh_texel(&self) -> Option<impl FnMut(&[f32]) -> [u8; 4] + '_> {
+        let EncodedShadingType::Sampled(EncodedSampledShading {
+            samples,
+            function: Some(function),
+        }) = &self.shading_type
+        else {
+            return None;
+        };
+        let MeshSamples::Dense {
+            stride: 1,
+            components,
+            covered,
+            ..
+        } = &**samples
+        else {
+            return None;
+        };
+        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+        for (&t, _) in components
+            .iter()
+            .zip(covered)
+            .filter(|(_, covered)| **covered)
+        {
+            (lo, hi) = (lo.min(t), hi.max(t));
+        }
+        if !(lo <= hi) {
+            return None;
+        }
+
+        let span = hi - lo;
+        let texel_at = move |t: f32| {
+            let mut val = [0.0; MAX_COMPONENTS];
+            let val = &mut val[..function.num_outputs()];
+            let color = function
+                .eval(&[t], val)
+                .map(|()| self.color_space.to_rgba(val, 1.0));
+            premultiplied_rgba8(self.finish(color))
+        };
+        let mut table = vec![None; GRADIENT_STEPS + 1];
+
+        Some(move |c: &[f32]| {
+            let t = c[0];
+            if !(lo..=hi).contains(&t) {
+                return texel_at(t);
+            }
+            let step = if span > 0.0 {
+                ((t - lo) / span * GRADIENT_STEPS as f32).round() as usize
+            } else {
+                0
+            };
+            *table[step]
+                .get_or_insert_with(|| texel_at(lo + span * step as f32 / GRADIENT_STEPS as f32))
+        })
+    }
+
+    /// The texels of a mesh shading, each from its sample with `texel`.
+    fn mesh_texels(
+        &self,
+        bbox: Rect,
+        scale: f32,
+        data: &mut Vec<[u8; 4]>,
+        mut texel: impl FnMut(&[f32]) -> [u8; 4],
+    ) -> Affine {
+        let EncodedShadingType::Sampled(EncodedSampledShading { samples, .. }) = &self.shading_type
+        else {
+            unreachable!("only called for mesh shadings");
+        };
+        let background = premultiplied_rgba8(self.finish(Some(self.background_color)));
         let grid = self.texel_grid(bbox, scale);
+
         let MeshSamples::Dense {
             x0,
             y0,
@@ -284,10 +354,10 @@ impl EncodedShadingPattern {
             covered,
         } = &**samples
         else {
-            return Some(self.mesh_texels_at_points(bbox, scale, data, texel, background));
+            return self.mesh_texels_at_points(data, bbox, scale, samples, texel, background);
         };
         if grid.x_advance.y != 0.0 || grid.y_advance.x != 0.0 {
-            return Some(self.mesh_texels_at_points(bbox, scale, data, texel, background));
+            return self.mesh_texels_at_points(data, bbox, scale, samples, texel, background);
         }
 
         // The grid steps across along rows and down along columns only, so the points of a
@@ -321,25 +391,22 @@ impl EncodedShadingPattern {
             }));
         }
 
-        Some(grid.transform)
+        grid.transform
     }
 
     /// The texels of a mesh shading from its samples at each point of the grid.
     fn mesh_texels_at_points(
         &self,
+        data: &mut Vec<[u8; 4]>,
         bbox: Rect,
         scale: f32,
-        data: &mut Vec<[u8; 4]>,
-        texel: impl Fn(&[f32]) -> [u8; 4],
+        samples: &MeshSamples,
+        mut texel: impl FnMut(&[f32]) -> [u8; 4],
         background: [u8; 4],
     ) -> Affine {
-        let EncodedShadingType::Sampled(EncodedSampledShading { samples, .. }) = &self.shading_type
-        else {
-            unreachable!("only called for mesh shadings");
-        };
         self.for_each_texel(bbox, scale, |point| {
             let c = samples.get((point.x as u16, point.y as u16));
-            data.push(c.map_or(background, &texel));
+            data.push(c.map_or(background, &mut texel));
         })
         .2
     }
