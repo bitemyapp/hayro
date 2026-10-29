@@ -143,7 +143,7 @@ impl Renderer<'_> {
     ) {
         let clip_path = self.begin_fill_run(props, Rect::ZERO);
         let color = solid(color);
-        let mut tinted = false;
+        let mut coverage = Vec::new();
 
         for glyph in glyph_run.glyphs() {
             let Glyph::Outline(outline) = &**glyph else {
@@ -155,39 +155,12 @@ impl Renderer<'_> {
                 Some(Some((cached, x, y))) => {
                     let (width, height) = (cached.pixmap.width(), cached.pixmap.height());
                     let rect = Rect::new(x, y, x + width as f64, y + height as f64);
-                    if self.misses_target(rect) {
-                        continue;
+                    if !self.misses_target(rect) {
+                        coverage.push((cached.pixmap, x, y));
                     }
-
-                    if !tinted {
-                        self.ctx.set_tint(Some(Tint {
-                            color,
-                            mode: TintMode::AlphaMask,
-                        }));
-                        tinted = true;
-                    }
-
-                    self.ctx.set_transform(Affine::translate((x, y)));
-                    self.ctx.set_paint_transform(Affine::IDENTITY);
-                    self.ctx.set_paint(Image {
-                        image: ImageSource::Pixmap(cached.pixmap),
-                        sampler: ImageSampler {
-                            x_extend: Extend::Pad,
-                            y_extend: Extend::Pad,
-                            quality: ImageQuality::Low,
-                            alpha: 1.0,
-                        },
-                    });
-                    self.ctx
-                        .fill_rect(&Rect::new(0.0, 0.0, width as f64, height as f64));
                 }
                 Some(None) => {}
                 None => {
-                    if tinted {
-                        self.ctx.reset_tint();
-                        tinted = false;
-                    }
-
                     self.ctx.set_paint(color);
                     self.ctx.set_transform(transform);
                     self.ctx.fill_path(self.cached_outline(outline).as_ref());
@@ -195,11 +168,75 @@ impl Renderer<'_> {
             }
         }
 
-        if tinted {
-            self.ctx.reset_tint();
+        self.fill_coverage(&coverage, color);
+        self.finish_run(clip_path);
+    }
+
+    /// Draw cached glyph coverage, each at its top left, in `color`: combined into one image
+    /// where they're close enough together, as drawing each costs as much as many of its
+    /// pixels. Where glyphs overlap, their coverage is combined as drawing one over the other
+    /// would, give or take rounding.
+    fn fill_coverage(&mut self, coverage: &[(Arc<Pixmap>, f64, f64)], color: AlphaColor<Srgb>) {
+        let Some(&(_, first_x, first_y)) = coverage.first() else {
+            return;
+        };
+        let (mut x0, mut y0, mut x1, mut y1) = (first_x, first_y, first_x, first_y);
+        let mut area = 0.0;
+        for (pixmap, x, y) in coverage {
+            let (width, height) = (pixmap.width() as f64, pixmap.height() as f64);
+            (x0, y0) = (x0.min(*x), y0.min(*y));
+            (x1, y1) = (x1.max(x + width), y1.max(y + height));
+            area += width * height;
+        }
+        let (width, height) = (x1 - x0, y1 - y0);
+        let combine =
+            coverage.len() > 1 && width * height <= 4.0 * area && width.max(height) <= 4096.0;
+
+        self.ctx.set_tint(Some(Tint {
+            color,
+            mode: TintMode::AlphaMask,
+        }));
+        self.ctx.set_paint_transform(Affine::IDENTITY);
+        let draw = |ctx: &mut vello_cpu::RenderContext, pixmap: Arc<Pixmap>, x, y| {
+            let (width, height) = (pixmap.width() as f64, pixmap.height() as f64);
+            ctx.set_transform(Affine::translate((x, y)));
+            ctx.set_paint(Image {
+                image: ImageSource::Pixmap(pixmap),
+                sampler: ImageSampler {
+                    x_extend: Extend::Pad,
+                    y_extend: Extend::Pad,
+                    quality: ImageQuality::Low,
+                    alpha: 1.0,
+                },
+            });
+            ctx.fill_rect(&Rect::new(0.0, 0.0, width, height));
+        };
+
+        if combine {
+            let mut combined = Pixmap::new(width as u16, height as u16);
+            let stride = combined.width() as usize;
+            let pixels = combined.data_mut();
+            for (pixmap, x, y) in coverage {
+                let (left, top) = ((x - x0) as usize, (y - y0) as usize);
+                let glyph_width = pixmap.width() as usize;
+                for (row, source) in pixmap.data().chunks_exact(glyph_width).enumerate() {
+                    let start = (top + row) * stride + left;
+                    for (target, source) in pixels[start..][..glyph_width].iter_mut().zip(source) {
+                        // Black over black, so only coverage changes.
+                        let (d, s) = (target.a as u32, source.a as u32);
+                        let under = d * (255 - s) + 128;
+                        target.a = (s + ((under + (under >> 8)) >> 8)) as u8;
+                    }
+                }
+            }
+            draw(self.ctx, Arc::new(combined), x0, y0);
+        } else {
+            for (pixmap, x, y) in coverage {
+                draw(self.ctx, pixmap.clone(), *x, *y);
+            }
         }
 
-        self.finish_run(clip_path);
+        self.ctx.reset_tint();
     }
 
     fn fill_glyph<'a>(&mut self, glyph: &Glyph<'a>, props: DrawProps<'a>, transform: Affine) {
