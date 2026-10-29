@@ -528,10 +528,15 @@ pub(crate) mod cached {
             let xref_reference: &'static XRef = unsafe { core::mem::transmute(xref.deref()) };
 
             let ctx = ReaderContext::new(xref_reference, false);
-            let pages = xref_reference
+            // A page tree without pages (damaged, or another object in its place) is
+            // searched past too, and kept if the search finds none either.
+            let tree = xref_reference
                 .get_with(xref.trailer_data().pages_ref, &ctx)
-                .and_then(|p| Pages::new(&p, &ctx, xref_reference))
-                .or_else(|| Pages::new_brute_force(&ctx, xref_reference))?;
+                .and_then(|p| Pages::new(&p, &ctx, xref_reference));
+            let pages = match tree {
+                Some(tree) if !tree.is_empty() => tree,
+                tree => Pages::new_brute_force(&ctx, xref_reference).or(tree)?,
+            };
 
             Some(Self { pages, _xref: xref })
         }
