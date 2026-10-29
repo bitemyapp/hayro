@@ -142,7 +142,6 @@ impl Function {
     /// [`Self::num_outputs`] values each. Returns `None` if the lengths don't match or the
     /// function couldn't be evaluated.
     pub fn eval(&self, input: &[f32], output: &mut [f32]) -> Option<()> {
-        let repr = &self.0;
         let (num_inputs, num_outputs) = (self.num_inputs(), self.num_outputs());
 
         // One sample, as shadings and color spaces evaluate them, without dividing the input
