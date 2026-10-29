@@ -112,6 +112,54 @@ impl<'a> Type3<'a> {
             .and_then(|name| glyph_name_to_unicode(name, false))
     }
 
+    /// For a glyph that only gives a shape (with `d1`), drawn with paths filled or clipped and
+    /// image masks alone, so that only its color and transform come from where it's shown:
+    /// its bounding box (as `d1` gives it), in the space of the glyph transform
+    /// [`Self::render_glyph`] is passed. `None` for other glyphs.
+    pub(crate) fn shape_bounds(&self, glyph: &Type3Glyph<'a>) -> Option<kurbo::Rect> {
+        let name = self.glyph_simulator.glyph_to_string(glyph.glyph_id)?;
+        let decoded = self.char_procs.get(&name)?.decoded().ok()?;
+        let mut iter = TypedIter::new(decoded.as_ref());
+
+        let bounds = loop {
+            match iter.next()? {
+                TypedInstruction::ShapeGlyph(d1) => {
+                    let [x0, y0, x1, y1] = [d1.2, d1.3, d1.4, d1.5].map(|n| n.as_f64());
+                    break kurbo::Rect::new(x0, y0, x1, y1);
+                }
+                TypedInstruction::ColorGlyph(_) => return None,
+                _ => {}
+            }
+        };
+
+        while let Some(instruction) = iter.next() {
+            use TypedInstruction::*;
+            match instruction {
+                SaveState(_) | RestoreState(_) | Transform(_) | MoveTo(_) | LineTo(_)
+                | CubicTo(_) | CubicStartTo(_) | CubicEndTo(_) | ClosePath(_) | RectPath(_)
+                | FillPathNonZero(_) | FillPathNonZeroCompatibility(_) | FillPathEvenOdd(_)
+                | EndPath(_) | ClipNonZero(_) | ClipEvenOdd(_) | InlineImage(_)
+                | LineWidth(_) | LineCap(_) | LineJoin(_) | MiterLimit(_) | DashPattern(_)
+                | FlatnessTolerance(_) | RenderingIntent(_) | MarkedContentPoint(_)
+                | MarkedContentPointWithProperties(_) | BeginMarkedContent(_)
+                | BeginMarkedContentWithProperties(_) | EndMarkedContent(_)
+                | BeginCompatibility(_) | EndCompatibility(_) => {}
+                // Colors are ignored in a glyph that gives a shape.
+                ColorSpaceStroke(_) | ColorSpaceNonStroke(_) | StrokeColor(_)
+                | StrokeColorNamed(_) | NonStrokeColor(_) | NonStrokeColorNamed(_)
+                | StrokeColorDeviceGray(_) | NonStrokeColorDeviceGray(_)
+                | StrokeColorDeviceRgb(_) | NonStrokeColorDeviceRgb(_) | StrokeColorCmyk(_)
+                | NonStrokeColorCmyk(_) => {}
+                _ => return None,
+            }
+        }
+
+        Some(
+            (self.matrix * Affine::scale(UNITS_PER_EM as f64))
+                .transform_rect_bbox(bounds.abs()),
+        )
+    }
+
     pub(crate) fn render_glyph(
         &self,
         glyph: &Type3Glyph<'a>,

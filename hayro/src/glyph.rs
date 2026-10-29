@@ -1,6 +1,6 @@
 use crate::{Renderer, convert_fill_rule};
 use hayro_interpret::color::Color;
-use hayro_interpret::font::{Glyph, GlyphRun, OutlineGlyph};
+use hayro_interpret::font::{Glyph, GlyphRun, OutlineGlyph, Type3Glyph};
 use hayro_interpret::{CacheKey, DrawMode, DrawProps, FillRule, Paint, StrokeProps};
 use kurbo::{Affine, BezPath, Rect, Shape};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -28,6 +28,10 @@ const MAX_SEEN_GLYPHS: usize = 1 << 18;
 pub(crate) struct GlyphCache {
     glyphs: FxHashMap<GlyphKey, Option<CachedGlyph>>,
     seen: FxHashSet<GlyphKey>,
+    /// Glyphs that can't be cached (Type 3 glyphs that give colors, say).
+    uncacheable: FxHashSet<u128>,
+    /// The bounds of Type 3 glyphs that give shapes, as [`Type3Glyph::shape_bounds`] gives them.
+    type3_bounds: FxHashMap<u128, Option<Rect>>,
     bytes: usize,
 }
 
@@ -61,6 +65,70 @@ impl Renderer<'_> {
         glyph: &OutlineGlyph,
         transform: Affine,
     ) -> Option<Option<(CachedGlyph, f64, f64)>> {
+        self.cached_coverage_with(
+            glyph.identifier().cache_key(),
+            transform,
+            false,
+            |renderer, at| {
+                let outline = renderer.cached_outline(glyph);
+                let bbox = at.transform_rect_bbox(outline.control_box());
+                if outline.elements().is_empty() || bbox.area() == 0.0 {
+                    return Some(None);
+                }
+                Some(Some(renderer.draw_coverage(bbox, |ctx, offset| {
+                    ctx.set_transform(offset * at);
+                    ctx.set_fill_rule(Fill::NonZero);
+                    ctx.set_paint(BLACK);
+                    ctx.fill_path(outline.as_ref());
+                })))
+            },
+        )
+    }
+
+    /// The same for a Type 3 glyph that only gives a shape, drawn in black within the
+    /// bounding box it gives; `None` for other Type 3 glyphs, which are drawn each time.
+    fn cached_type3_coverage(
+        &self,
+        glyph: &Type3Glyph<'_>,
+        transform: Affine,
+    ) -> Option<Option<(CachedGlyph, f64, f64)>> {
+        // Drawing one into the cache costs about what drawing it does, so it's cached the first
+        // time; its bounds are found once for all its sizes and positions.
+        self.cached_coverage_with(glyph.glyph_key(), transform, true, |renderer, at| {
+            let bounds = *renderer
+                .global
+                .glyph_cache
+                .borrow_mut()
+                .type3_bounds
+                .entry(glyph.glyph_key())
+                .or_insert_with(|| glyph.shape_bounds());
+            let bbox = at.transform_rect_bbox(bounds?);
+            if bbox.area() == 0.0 {
+                return Some(None);
+            }
+            if bbox.width().max(bbox.height()) > 2.0 * MAX_CACHED_EM {
+                return None;
+            }
+            let black = Paint::Color(Color::from_rgba(hayro_interpret::color::AlphaColor::BLACK));
+            Some(Some(renderer.draw_coverage(bbox, |ctx, offset| {
+                let mut device = Renderer::new(ctx, renderer.global);
+                device.in_type3_glyph = true;
+                glyph.interpret(&mut device, offset * at, Affine::IDENTITY, &black);
+            })))
+        })
+    }
+
+    /// The cached coverage of the glyph `id` under the transform, as `draw` draws it at the
+    /// transform it's given (the glyph's linear part, at the origin's place within its pixel):
+    /// `None` from `draw` means the glyph can't be cached, and it's drawn directly from then
+    /// on. Glyphs are cached the second time they're drawn, or the first if `at_first_sight`.
+    fn cached_coverage_with(
+        &self,
+        id: u128,
+        transform: Affine,
+        at_first_sight: bool,
+        draw: impl FnOnce(&Self, Affine) -> Option<Option<CachedGlyph>>,
+    ) -> Option<Option<(CachedGlyph, f64, f64)>> {
         let [a, b, c, d, e, f] = transform.as_coeffs();
         let em = (a * a + b * b).max(c * c + d * d).sqrt() * 1000.0;
         if em.is_nan() || em > MAX_CACHED_EM || !e.is_finite() || !f.is_finite() {
@@ -72,7 +140,7 @@ impl Renderer<'_> {
         let (whole_x, whole_y) = (x.div_euclid(SUBPIXEL), y.div_euclid(SUBPIXEL));
         let phase = [x.rem_euclid(SUBPIXEL), y.rem_euclid(SUBPIXEL)];
         let key = GlyphKey {
-            id: glyph.identifier().cache_key(),
+            id,
             linear: [quantize(a), quantize(b), quantize(c), quantize(d)],
             phase: [phase[0] as u8, phase[1] as u8],
         };
@@ -89,35 +157,21 @@ impl Renderer<'_> {
             if let Some(cached) = cache.glyphs.get(&key) {
                 return Some(placed(cached.clone()));
             }
+            if cache.uncacheable.contains(&id) {
+                return None;
+            }
             if cache.seen.len() >= MAX_SEEN_GLYPHS {
                 cache.seen.clear();
             }
-            if cache.seen.insert(key) {
+            if !at_first_sight && cache.seen.insert(key) {
                 return None;
             }
         }
 
-        let outline = self.cached_outline(glyph);
         let at = Affine::new([a, b, c, d, phase[0] / SUBPIXEL, phase[1] / SUBPIXEL]);
-        let bbox = at.transform_rect_bbox(outline.control_box());
-        let cached = if outline.elements().is_empty() || bbox.area() == 0.0 {
-            None
-        } else {
-            let (x0, y0) = (bbox.x0.floor(), bbox.y0.floor());
-            let width = (bbox.x1.ceil() - x0) as u16;
-            let height = (bbox.y1.ceil() - y0) as u16;
-            let mut ctx = self.child_context(width, height);
-            ctx.set_transform(Affine::translate((-x0, -y0)) * at);
-            ctx.set_fill_rule(Fill::NonZero);
-            ctx.set_paint(BLACK);
-            ctx.fill_path(outline.as_ref());
-            ctx.flush();
-            let mut pixmap = crate::zeroed_pixmap(width, height);
-            ctx.render(&mut pixmap, &mut vello_cpu::Resources::default());
-            Some(CachedGlyph {
-                pixmap: Arc::new(pixmap),
-                offset: (x0, y0),
-            })
+        let Some(cached) = draw(self, at) else {
+            self.global.glyph_cache.borrow_mut().uncacheable.insert(id);
+            return None;
         };
 
         let mut cache = self.global.glyph_cache.borrow_mut();
@@ -133,6 +187,27 @@ impl Renderer<'_> {
         cache.glyphs.insert(key, cached.clone());
 
         Some(placed(cached))
+    }
+
+    /// The coverage of what `draw` draws in black within `bbox` (in whole pixels), given a
+    /// context of that size and the translation to it.
+    fn draw_coverage(
+        &self,
+        bbox: Rect,
+        draw: impl FnOnce(&mut vello_cpu::RenderContext, Affine),
+    ) -> CachedGlyph {
+        let (x0, y0) = (bbox.x0.floor(), bbox.y0.floor());
+        let width = (bbox.x1.ceil() - x0) as u16;
+        let height = (bbox.y1.ceil() - y0) as u16;
+        let mut ctx = self.child_context(width, height);
+        draw(&mut ctx, Affine::translate((-x0, -y0)));
+        ctx.flush();
+        let mut pixmap = crate::zeroed_pixmap(width, height);
+        ctx.render(&mut pixmap, &mut vello_cpu::Resources::default());
+        CachedGlyph {
+            pixmap: Arc::new(pixmap),
+            offset: (x0, y0),
+        }
     }
 
     fn fill_cached_glyphs(
@@ -253,6 +328,23 @@ impl Renderer<'_> {
                 self.fill_path(outline.as_ref(), props, FillRule::NonZero);
             }
             Glyph::Type3(glyph) => {
+                if let Paint::Color(color) = &props.paint
+                    && let Some(coverage) =
+                        self.cached_type3_coverage(glyph, props.transform * transform)
+                {
+                    if let Some(clip_path) = self.begin_fill_run(&props, Rect::ZERO) {
+                        if let Some((cached, x, y)) = coverage {
+                            let (width, height) = (cached.pixmap.width(), cached.pixmap.height());
+                            let rect = Rect::new(x, y, x + width as f64, y + height as f64);
+                            if !self.misses_target(rect) {
+                                self.fill_coverage(&[(cached.pixmap, x, y)], solid(color));
+                            }
+                        }
+                        self.finish_run(clip_path);
+                    }
+                    return;
+                }
+
                 self.in_type3_glyph = true;
                 glyph.interpret(self, props.transform, transform, &props.paint);
                 self.in_type3_glyph = false;

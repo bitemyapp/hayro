@@ -275,6 +275,19 @@ impl<'a> Type3Glyph<'a> {
         self.font.char_code_to_unicode(self.char_code)
     }
 
+    /// For a glyph that only gives a shape (with `d1`) and draws it with paths filled or
+    /// clipped and image masks alone, its bounding box in the space of the glyph transform
+    /// [`Self::interpret`] is passed: such a glyph looks the same wherever it's shown, but for
+    /// its color and transform, so it can be drawn once and reused. `None` for others.
+    pub fn shape_bounds(&self) -> Option<Rect> {
+        self.font.shape_bounds(self)
+    }
+
+    /// An identifier of the glyph, the same wherever it's shown.
+    pub fn glyph_key(&self) -> u128 {
+        hash128(&(self.font.cache_key(), self.glyph_id))
+    }
+
     /// Get the original character code that selected this glyph.
     pub fn char_code(&self) -> u32 {
         self.char_code
