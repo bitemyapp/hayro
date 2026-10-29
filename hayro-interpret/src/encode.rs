@@ -673,30 +673,43 @@ fn for_each_pixel(
     let (d00, d01, d11) = (v0.dot(v0), v0.dot(v1), v1.dot(v1));
     let denom = d00 * d11 - d01 * d01;
 
-    let mut pixel = |x: u16, y: u16| {
+    // The weights of `b` and `c` at the start of a run of a row, and how they change from
+    // pixel to pixel along it (stepping them from there differs from computing them at each
+    // pixel only in the last bits).
+    let weights = |x: u16, y: u16| {
         let v2 = Point::new(x as f64, y as f64) - a;
         let (d20, d21) = (v2.dot(v0), v2.dot(v1));
         let v = (d11 * d20 - d01 * d21) / denom;
         let w = (d00 * d21 - d01 * d20) / denom;
-        f(x, y, [(1.0 - v - w) as f32, v as f32, w as f32]);
+        (v, w)
+    };
+    let (dv, dw) = (
+        (d11 * v0.x - d01 * v1.x) / denom,
+        (d00 * v1.x - d01 * v0.x) / denom,
+    );
+    let mut run = |xs: Range<u16>, y: u16| {
+        let (mut v, mut w) = weights(xs.start, y);
+        for x in xs {
+            f(x, y, [(1.0 - v - w) as f32, v as f32, w as f32]);
+            (v, w) = (v + dv, w + dw);
+        }
     };
 
     // Small or degenerate triangles have every pixel tested, as rounding near their corners
     // could make the side tests disagree in ways `covered_run` doesn't expect.
     if t_xs.len() <= 8 || v0.cross(v1).abs() < 1.0 {
         for y in t_ys {
-            for x in t_xs.clone() {
-                if triangle.winding(Point::new(x as f64, y as f64)) != 0 {
-                    pixel(x, y);
-                }
+            let covered = |x: &u16| triangle.winding(Point::new(*x as f64, y as f64)) != 0;
+            let mut xs = t_xs.clone();
+            while let Some(start) = xs.find(covered) {
+                let end = xs.find(|x| !covered(x)).unwrap_or(t_xs.end);
+                run(start..end, y);
             }
         }
     } else {
         let edges = Edges::new(&triangle);
         for y in t_ys {
-            for x in covered_run(&triangle, &edges, y, &t_xs) {
-                pixel(x, y);
-            }
+            run(covered_run(&triangle, &edges, y, &t_xs), y);
         }
     }
 }
