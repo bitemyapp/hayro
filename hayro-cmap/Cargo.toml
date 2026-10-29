@@ -16,6 +16,7 @@ embed-cmaps = ["std"]
 
 [dependencies]
 hayro-postscript = { workspace = true }
+smallvec = { workspace = true }
 
 [lints]
 workspace = true

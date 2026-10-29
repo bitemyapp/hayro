@@ -575,10 +575,13 @@ impl PartitionedRanges {
     }
 }
 
+/// A destination's UTF-16 code units, held inline: almost all are one or two.
+pub(crate) type Units = smallvec::SmallVec<[u16; 4]>;
+
 #[derive(Debug, Clone)]
 pub(crate) struct BfRange {
     pub(crate) range: Range,
-    pub(crate) dst_base: Vec<u16>,
+    pub(crate) dst_base: Units,
 }
 
 impl HasRange for BfRange {

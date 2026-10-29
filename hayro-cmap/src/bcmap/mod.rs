@@ -15,7 +15,7 @@ pub use embedded::load_embedded;
 use crate::bcmap::embedded::BUNDLE;
 use crate::{
     BfRange, CMap, CMapName, CharacterCollection, CidFamily, CidRange, CodespaceRange, Metadata,
-    PartitionedRanges, Range, WritingMode, parse,
+    PartitionedRanges, Range, Units, WritingMode, parse,
 };
 use huffman::HuffmanTable;
 use reader::Reader;
@@ -387,7 +387,7 @@ fn parse_bf_segment(
             Some(nu) => nu,
             None => r.read_u8()? as usize,
         };
-        let mut dst_base = Vec::with_capacity(n_units);
+        let mut dst_base = Units::with_capacity(n_units);
         for _ in 0..n_units {
             dst_base.push(r.read_u16()?);
         }

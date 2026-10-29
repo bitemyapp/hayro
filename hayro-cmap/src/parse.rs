@@ -7,7 +7,7 @@ use hayro_postscript::{Object, Scanner};
 use crate::bcmap;
 use crate::{
     BfRange, CMap, CMapName, CharacterCollection, CidFamily, CidRange, CodespaceRange,
-    MAX_NESTING_DEPTH, Metadata, PartitionedRanges, Range, WritingMode,
+    MAX_NESTING_DEPTH, Metadata, PartitionedRanges, Range, Units, WritingMode,
 };
 
 struct Context<F> {
@@ -325,12 +325,12 @@ fn parse_bf_range<F>(
 }
 
 /// Convert the buffer into native-endian u16, so that we can use `String::from_utf16`.
-fn decode_be(bytes: &[u8]) -> Option<Vec<u16>> {
+fn decode_be(bytes: &[u8]) -> Option<Units> {
     if bytes.is_empty() {
         return None;
     }
 
-    let mut out = Vec::with_capacity(bytes.len().div_ceil(2));
+    let mut out = Units::with_capacity(bytes.len().div_ceil(2));
     let mut i = 0;
 
     // My understanding is that the bf strings should always be UTF16-BE encoded,
