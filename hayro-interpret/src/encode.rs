@@ -299,7 +299,7 @@ impl EncodedShadingPattern {
         {
             (lo, hi) = (lo.min(t), hi.max(t));
         }
-        if !(lo <= hi) {
+        if lo > hi {
             return None;
         }
 

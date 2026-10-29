@@ -178,12 +178,9 @@ mod tests {
         }
         let mut expected = vec![0; input.len() / 4 * 3];
         transform.transform(&input, &mut expected).unwrap();
-        for (cmyk, rgb) in input.chunks_exact(4).zip(expected.chunks_exact(3)) {
-            assert_eq!(
-                cmyk_to_rgb([cmyk[0], cmyk[1], cmyk[2], cmyk[3]]),
-                [rgb[0], rgb[1], rgb[2]],
-                "{cmyk:?}"
-            );
+        let (inputs, outputs) = (input.as_chunks::<4>().0, expected.as_chunks::<3>().0);
+        for (cmyk, rgb) in inputs.iter().zip(outputs) {
+            assert_eq!(cmyk_to_rgb(*cmyk), *rgb, "{cmyk:?}");
         }
     }
 }
