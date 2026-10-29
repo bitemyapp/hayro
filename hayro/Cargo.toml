@@ -23,7 +23,8 @@ fearless_simd = { workspace = true }
 [features]
 default = ["embed-fonts", "embed-cmaps"]
 embed-fonts = ["hayro-interpret/embed-fonts"]
-# Embed the 61 predefined cmaps into the binary. Adds about ~250KB of brotli-encoded data.
+# Embed the 65 predefined cmaps into the binary, as tables searched in place. Adds about
+# 1.7 MB of data.
 embed-cmaps = ["hayro-interpret/embed-cmaps"]
 
 [lints]
