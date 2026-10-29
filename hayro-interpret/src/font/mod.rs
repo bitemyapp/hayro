@@ -776,7 +776,7 @@ pub(crate) fn read_to_unicode(dict: &Dict<'_>, cmap_resolver: &CMapResolverFn) -
         .or_else(|| {
             dict.get::<Name<'_>>(TO_UNICODE)
                 .and_then(|name| (cmap_resolver)(CMapName::from_bytes(name.as_ref())))
-                .map(|d| Cow::Owned(d.to_vec()))
+                .map(Cow::Borrowed)
         })
         .and_then(|data| {
             let cmap_resolver = cmap_resolver.clone();

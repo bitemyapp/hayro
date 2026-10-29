@@ -44,80 +44,14 @@ pub(super) struct Bundle {
     entries: Vec<Range<usize>>,
 }
 
-/// Load the data for a cmap file, by name.
-pub fn load_embedded(name: CMapName<'_>) -> Option<&'static [u8]> {
-    // Get the index of the font of the cmap in the bundle. They are sorted
-    // alphabetically.
-    let idx = match name {
-        CMapName::N83pvRksjH => 0,
-        CMapName::N90msRksjH => 1,
-        CMapName::N90msRksjV => 2,
-        CMapName::N90mspRksjH => 3,
-        CMapName::N90mspRksjV => 4,
-        CMapName::N90pvRksjH => 5,
-        CMapName::AddRksjH => 6,
-        CMapName::AddRksjV => 7,
-        CMapName::AdobeCns1Ucs2 => 8,
-        CMapName::AdobeGb1Ucs2 => 9,
-        CMapName::AdobeJapan1Ucs2 => 10,
-        CMapName::AdobeKorea1Ucs2 => 11,
-        CMapName::B5pcH => 12,
-        CMapName::B5pcV => 13,
-        CMapName::CnsEucH => 14,
-        CMapName::CnsEucV => 15,
-        CMapName::ETenB5H => 16,
-        CMapName::ETenB5V => 17,
-        CMapName::ETenmsB5H => 18,
-        CMapName::ETenmsB5V => 19,
-        CMapName::EucH => 20,
-        CMapName::EucV => 21,
-        CMapName::ExtRksjH => 22,
-        CMapName::ExtRksjV => 23,
-        CMapName::GbEucH => 24,
-        CMapName::GbEucV => 25,
-        CMapName::GbkEucH => 26,
-        CMapName::GbkEucV => 27,
-        CMapName::Gbk2kH => 28,
-        CMapName::Gbk2kV => 29,
-        CMapName::GbkpEucH => 30,
-        CMapName::GbkpEucV => 31,
-        CMapName::GbpcEucH => 32,
-        CMapName::GbpcEucV => 33,
-        CMapName::H => 34,
-        CMapName::HKscsB5H => 35,
-        CMapName::HKscsB5V => 36,
-        CMapName::IdentityH => 37,
-        CMapName::IdentityV => 38,
-        CMapName::KscEucH => 39,
-        CMapName::KscEucV => 40,
-        CMapName::KscmsUhcH => 41,
-        CMapName::KscmsUhcHwH => 42,
-        CMapName::KscmsUhcHwV => 43,
-        CMapName::KscmsUhcV => 44,
-        CMapName::KscpcEucH => 45,
-        CMapName::UniCnsUcs2H => 46,
-        CMapName::UniCnsUcs2V => 47,
-        CMapName::UniCnsUtf16H => 48,
-        CMapName::UniCnsUtf16V => 49,
-        CMapName::UniGbUcs2H => 50,
-        CMapName::UniGbUcs2V => 51,
-        CMapName::UniGbUtf16H => 52,
-        CMapName::UniGbUtf16V => 53,
-        CMapName::UniJisUcs2H => 54,
-        CMapName::UniJisUcs2HwH => 55,
-        CMapName::UniJisUcs2HwV => 56,
-        CMapName::UniJisUcs2V => 57,
-        CMapName::UniJisUtf16H => 58,
-        CMapName::UniJisUtf16V => 59,
-        CMapName::UniKsUcs2H => 60,
-        CMapName::UniKsUcs2V => 61,
-        CMapName::UniKsUtf16H => 62,
-        CMapName::UniKsUtf16V => 63,
-        CMapName::V => 64,
-        CMapName::Custom(_) => return None,
-    };
+/// The bundle's data for a cmap, by name.
+pub(crate) fn load(name: CMapName<'_>) -> Option<&'static [u8]> {
+    load_index(crate::prebuilt::index(name)?)
+}
 
-    let range = BUNDLE.entries.get(idx)?;
+/// The bundle's data for the cmap at `index` (see `prebuilt::index`).
+pub(crate) fn load_index(index: usize) -> Option<&'static [u8]> {
+    let range = BUNDLE.entries.get(index)?;
 
     Some(&BUNDLE.data[range.clone()])
 }

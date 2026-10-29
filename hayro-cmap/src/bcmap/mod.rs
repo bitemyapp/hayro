@@ -2,6 +2,9 @@
 //! the required cmaps in a space-efficient manner. However, we don't use
 //! their format description but have a custom one. For more information,
 //! see <https://github.com/LaurenzV/cmap-resources/tree/hayro>.
+//!
+//! The cmaps are now embedded as tables built from this bundle (see `prebuilt`), which
+//! is decoded only by the tests that check them.
 
 pub(crate) mod embedded;
 pub(crate) mod huffman;
@@ -10,7 +13,7 @@ pub(crate) mod reader;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-pub use embedded::load_embedded;
+pub(crate) use embedded::{load, load_index};
 
 use crate::bcmap::embedded::BUNDLE;
 use crate::{
@@ -199,6 +202,7 @@ pub(crate) fn parse<'a>(
         notdef_ranges,
         bf_entries,
         base,
+        prebuilt: None,
     })
 }
 

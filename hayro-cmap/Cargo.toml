@@ -11,7 +11,8 @@ license = { workspace = true }
 [features]
 default = ["embed-cmaps"]
 std = []
-# Embed the 61 predefined cmaps into the binary. Adds about 470KB of data.
+# Embed the 65 predefined cmaps into the binary, as tables searched in place. Adds about
+# 1.7 MB of data.
 embed-cmaps = ["std"]
 
 [dependencies]

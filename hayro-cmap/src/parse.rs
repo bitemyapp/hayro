@@ -3,8 +3,10 @@ use alloc::vec::Vec;
 
 use hayro_postscript::{Object, Scanner};
 
-#[cfg(feature = "embed-cmaps")]
+#[cfg(all(test, feature = "embed-cmaps"))]
 use crate::bcmap;
+#[cfg(feature = "embed-cmaps")]
+use crate::prebuilt;
 use crate::{
     BfRange, CMap, CMapName, CharacterCollection, CidFamily, CidRange, CodespaceRange,
     MAX_NESTING_DEPTH, Metadata, PartitionedRanges, Range, Units, WritingMode,
@@ -25,8 +27,14 @@ pub(crate) fn parse_inner<'a>(
         return None;
     }
 
-    // Check if it's in our custom embedded cmap format.
+    // Check if it's a predefined cmap, as `load_embedded` gives them.
     #[cfg(feature = "embed-cmaps")]
+    if data.starts_with(prebuilt::MAGIC) {
+        return prebuilt::parse(data, get_cmap, depth);
+    }
+
+    // Or in the compact format they're built from.
+    #[cfg(all(test, feature = "embed-cmaps"))]
     if data.starts_with(b"bcmap") {
         return bcmap::parse(data, get_cmap, depth);
     }
@@ -146,6 +154,8 @@ pub(crate) fn parse_inner<'a>(
         notdef_ranges,
         bf_entries,
         base,
+        #[cfg(feature = "embed-cmaps")]
+        prebuilt: None,
     })
 }
 

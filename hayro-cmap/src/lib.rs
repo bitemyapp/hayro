@@ -15,12 +15,15 @@ This crate forbids unsafe code via a crate-level attribute.
 
 extern crate alloc;
 
-#[cfg(feature = "embed-cmaps")]
+// The compact bundle the prebuilt tables are built from, decoded only to check them.
+#[cfg(all(test, feature = "embed-cmaps"))]
 mod bcmap;
 mod parse;
+#[cfg(feature = "embed-cmaps")]
+mod prebuilt;
 
 #[cfg(feature = "embed-cmaps")]
-pub use bcmap::load_embedded;
+pub use prebuilt::load_embedded;
 
 /// Look up an embedded binary cmap by name.
 ///
@@ -366,6 +369,9 @@ pub struct CMap {
     notdef_ranges: PartitionedRanges,
     bf_entries: Vec<BfRange>,
     base: Option<Box<Self>>,
+    /// A predefined cmap's tables, searched where they are, in place of the three above.
+    #[cfg(feature = "embed-cmaps")]
+    prebuilt: Option<Box<prebuilt::Tables>>,
 }
 
 impl CMap {
@@ -418,6 +424,8 @@ impl CMap {
             notdef_ranges: PartitionedRanges::new(),
             bf_entries: Vec::new(),
             base: None,
+            #[cfg(feature = "embed-cmaps")]
+            prebuilt: None,
         }
     }
 
@@ -434,16 +442,17 @@ impl CMap {
         // whether the entry exists in the first place. However, from my experiments
         // Acrobat mostly seems to ignore this, so we do that as well.
 
-        let cid_ranges = self.cid_ranges.get(byte_len)?;
-        let notdef_ranges = self.notdef_ranges.get(byte_len)?;
+        if !(1..=4).contains(&byte_len) {
+            return None;
+        }
 
-        if let Some(entry) = find_in_ranges(cid_ranges, code) {
-            let offset = code.checked_sub(entry.range.start)?;
-            return entry.cid_start.checked_add(offset);
-        } else if let Some(entry) = find_in_ranges(notdef_ranges, code) {
+        if let Some((start, cid_start)) = self.find_cid(false, byte_len, code) {
+            let offset = code.checked_sub(start)?;
+            return cid_start.checked_add(offset);
+        } else if let Some((_, cid_start)) = self.find_cid(true, byte_len, code) {
             // For `.notdef` ranges, all codes map to the same `.notdef` CID, so
             // no adding of the offset here.
-            return Some(entry.cid_start);
+            return Some(cid_start);
         }
 
         // See pdfjs_bug920426, it uses bf chars for encoding the characters
@@ -468,9 +477,39 @@ impl CMap {
         self.lookup_bf_string_inner(code, true)
     }
 
+    /// The first code and CID of the range of codes of `byte_len` bytes (1 to 4) holding
+    /// `code`, among the CID ranges or the `.notdef` ones.
+    fn find_cid(&self, notdef: bool, byte_len: u8, code: u32) -> Option<(u32, Cid)> {
+        #[cfg(feature = "embed-cmaps")]
+        if let Some(tables) = &self.prebuilt {
+            return tables.find_cid(notdef, byte_len, code);
+        }
+
+        let ranges = if notdef {
+            &self.notdef_ranges
+        } else {
+            &self.cid_ranges
+        };
+        let entry = find_in_ranges(ranges.get(byte_len)?, code)?;
+
+        Some((entry.range.start, entry.cid_start))
+    }
+
+    /// The first code of the bf range holding `code`, and the first code's destination.
+    fn find_bf(&self, code: u32) -> Option<(u32, Units)> {
+        #[cfg(feature = "embed-cmaps")]
+        if let Some(tables) = &self.prebuilt {
+            return tables.find_bf(code);
+        }
+
+        let entry = find_in_ranges(&self.bf_entries, code)?;
+
+        Some((entry.range.start, entry.dst_base.clone()))
+    }
+
     fn lookup_bf_string_inner(&self, code: u32, recurse: bool) -> Option<BfString> {
-        if let Some(entry) = find_in_ranges(&self.bf_entries, code) {
-            let offset = u16::try_from(code - entry.range.start).ok()?;
+        if let Some((start, mut units)) = self.find_bf(code) {
+            let offset = u16::try_from(code - start).ok()?;
 
             fn decode_utf16(units: &[u16]) -> Option<BfString> {
                 let mut iter = core::char::decode_utf16(units.iter().copied());
@@ -484,13 +523,11 @@ impl CMap {
                 }
             }
 
-            return if offset == 0 {
-                Some(decode_utf16(&entry.dst_base)?)
-            } else {
-                let mut units = entry.dst_base.clone();
+            if offset != 0 {
                 *units.last_mut()? = units.last()?.checked_add(offset)?;
-                Some(decode_utf16(&units)?)
-            };
+            }
+
+            return decode_utf16(&units);
         }
 
         if recurse {
