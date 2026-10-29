@@ -1,13 +1,18 @@
 use crate::{GlobalState, Renderer, convert_blend_mode, derive_settings};
-use hayro_interpret::{BlendMode, CacheKey, MaskType, SoftMask};
-use kurbo::{Rect, Vec2};
+use hayro_interpret::font::GlyphRun;
+use hayro_interpret::util::x_y_advances;
+use hayro_interpret::{
+    BlendMode, CacheKey, ClipPath, Device, DrawMode, DrawProps, Image, ImageDrawProps, MaskType,
+    SoftMask,
+};
+use kurbo::{BezPath, Rect, Vec2};
 use vello_cpu::color::palette::css::BLACK;
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::{Mask, Pixmap, RenderSettings};
 
 impl Renderer<'_> {
     pub(super) fn apply_soft_mask(&mut self, mask: Option<&SoftMask<'_>>) {
-        let mask = mask.map(|m| self.soft_mask(m));
+        let mask = mask.and_then(|m| self.soft_mask(m));
 
         if let Some(mask) = mask {
             self.ctx.set_mask(mask);
@@ -22,7 +27,7 @@ impl Renderer<'_> {
         mask: Option<SoftMask<'_>>,
         blend_mode: BlendMode,
     ) {
-        let mask = mask.map(|m| self.soft_mask(&m));
+        let mask = mask.and_then(|m| self.soft_mask(&m));
         self.ctx.push_layer(
             None,
             Some(convert_blend_mode(blend_mode)),
@@ -36,8 +41,9 @@ impl Renderer<'_> {
         self.ctx.pop_layer();
     }
 
-    /// The mask, drawn where it can matter: within what the active clips let through.
-    fn soft_mask(&mut self, mask: &SoftMask<'_>) -> Mask {
+    /// The mask, drawn where it can matter: within what the active clips let through. `None`
+    /// for a mask that lets everything through.
+    fn soft_mask(&mut self, mask: &SoftMask<'_>) -> Option<Mask> {
         let settings = *self.ctx.render_settings();
         let (width, height) = (self.ctx.width(), self.ctx.height());
         let visible = self.visible();
@@ -58,7 +64,7 @@ fn draw_soft_mask(
     height: u16,
     global: &GlobalState,
     visible: Rect,
-) -> Mask {
+) -> Option<Mask> {
     // Outside the bounds of what its group draws, the mask is its background, and only what
     // the clips let through matters, so only the rest is drawn. Both are whole pixels.
     let region = mask.bbox().expand().inflate(1.0, 1.0);
@@ -66,6 +72,11 @@ fn draw_soft_mask(
         region.intersect(visible)
     } else {
         visible
+    };
+    // The group's bounds often cover the page where it draws a little, or nothing.
+    let region = match drawn_bounds(mask, region) {
+        Some(drawn) => region.intersect(drawn.expand().inflate(2.0, 2.0)),
+        None => region,
     };
     let mut values = draw_region(mask, settings, region, global);
     let mut outside = [background(mask, settings)];
@@ -75,7 +86,89 @@ fn draw_soft_mask(
         transfer_function.apply_to(&mut outside);
     }
 
-    placed(values, region, outside[0], width, height)
+    // A mask that's opaque everywhere changes nothing.
+    if outside[0] == 255
+        && values
+            .chunks(4096)
+            .all(|chunk| chunk.iter().fold(255, |all, &v| all & v) == 255)
+    {
+        return None;
+    }
+
+    Some(placed(values, region, outside[0], width, height))
+}
+
+/// The bounds, within `region`, of what the mask's group draws (an empty rectangle if
+/// nothing), found by interpreting it without drawing: the bounds of its paths (and how far
+/// their strokes reach) and images, or `None` where it shows text, whose bounds aren't worth
+/// finding here.
+fn drawn_bounds(mask: &SoftMask<'_>, region: Rect) -> Option<Rect> {
+    let mut bounds = DrawnBounds {
+        drawn: Rect::ZERO,
+        any: false,
+        text: false,
+    };
+    mask.interpret_translated(&mut bounds, Vec2::ZERO);
+    if bounds.text {
+        return None;
+    }
+    Some(if bounds.any {
+        bounds.drawn
+    } else {
+        Rect::new(region.x0, region.y0, region.x0, region.y0)
+    })
+}
+
+/// A device collecting the bounds of what's drawn; see [`drawn_bounds`]. Clips and groups
+/// only make what's drawn smaller, so they're ignored.
+struct DrawnBounds {
+    drawn: Rect,
+    any: bool,
+    text: bool,
+}
+
+impl DrawnBounds {
+    fn add(&mut self, bounds: Rect) {
+        self.drawn = if self.any {
+            self.drawn.union(bounds)
+        } else {
+            bounds
+        };
+        self.any = true;
+    }
+}
+
+impl<'a> Device<'a> for DrawnBounds {
+    fn draw_path(&mut self, path: &BezPath, props: DrawProps<'a>, draw_mode: &DrawMode) {
+        let bounds = props.transform.transform_rect_bbox(path.control_box());
+        let reach = match draw_mode {
+            DrawMode::Stroke(stroke) | DrawMode::FillAndStroke(_, stroke) => {
+                let (x, y) = x_y_advances(&props.transform);
+                let width = stroke.line_width.max(1.0) as f64 * x.length().max(y.length());
+                width * (stroke.miter_limit as f64).max(std::f64::consts::SQRT_2)
+            }
+            DrawMode::Fill(_) => 0.0,
+            DrawMode::Invisible => return,
+        };
+        self.add(bounds.inflate(reach, reach));
+    }
+
+    fn push_clip_path(&mut self, _: &ClipPath) {}
+
+    fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'a>>, _: BlendMode) {}
+
+    fn draw_glyph_run(&mut self, _: &GlyphRun<'_, 'a>, _: DrawProps<'a>, _: &DrawMode) {
+        self.text = true;
+    }
+
+    fn draw_image(&mut self, image: Image<'a, '_>, props: ImageDrawProps<'a>) {
+        let local = Rect::new(0.0, 0.0, image.width() as f64, image.height() as f64);
+        self.add(props.transform.transform_rect_bbox(local));
+    }
+
+    fn pop_clip(&mut self) {}
+
+    fn pop_transparency_group(&mut self) {}
 }
 
 /// A mask of `width` by `height` with `values` in `region` (whole pixels within it, row by

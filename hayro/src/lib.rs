@@ -95,7 +95,7 @@ pub(crate) struct Renderer<'a> {
     global: &'a GlobalState,
     pub(crate) ctx: &'a mut RenderContext,
     pub(crate) inside_pattern: bool,
-    pub(crate) soft_mask_cache: FxHashMap<(u128, [u16; 4]), Mask>,
+    pub(crate) soft_mask_cache: FxHashMap<(u128, [u16; 4]), Option<Mask>>,
     pub(crate) in_type3_glyph: bool,
     /// The active clips, outermost first.
     pub(crate) clips: Vec<clip::Clip>,
