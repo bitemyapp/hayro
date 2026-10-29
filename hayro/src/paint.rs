@@ -11,19 +11,24 @@ use vello_cpu::peniko::{ColorStop, Gradient, ImageQuality, ImageSampler};
 use vello_cpu::{Image, ImageSource, PaintType, PixelMetadata, Pixmap, peniko};
 
 impl Renderer<'_> {
+    /// Set the paint, and return the clip path to push for it, or `None` if the paint can't
+    /// change any pixel (every color of it is fully transparent and drawn over the target),
+    /// so that drawing can be skipped.
     #[must_use]
     pub(super) fn set_paint(
         &mut self,
         paint: &Paint<'_>,
         path_bbox: impl Fn() -> Rect,
         is_stroke: bool,
-    ) -> Option<BezPath> {
+    ) -> Option<Option<BezPath>> {
         let mut paint_transform = Affine::IDENTITY;
         let mut clip_path = None;
+        let mut transparent = false;
 
         let paint: PaintType = match paint.clone() {
             Paint::Color(c) => {
                 let c = c.to_rgba().to_rgba8();
+                transparent = c[3] == 0;
                 AlphaColor::from_rgba8(c[0], c[1], c[2], c[3]).into()
             }
             Paint::Pattern(p) => {
@@ -63,6 +68,7 @@ impl Renderer<'_> {
                                 * Affine::translate((-0.5, -0.5))
                                 * native.transform;
 
+                            transparent = native.stops.iter().all(|stop| stop.color[3] == 0.0);
                             let stops = native
                                 .stops
                                 .iter()
@@ -96,6 +102,7 @@ impl Renderer<'_> {
                             PaintType::Gradient(gradient)
                         } else {
                             let texture = encoded.sample_texture_premultiplied(visible, 1.0);
+                            transparent = texture.data.iter().all(|texel| texel[3] == 0);
                             paint_transform = path_transform.inverse() * texture.transform;
 
                             let pixmap = Pixmap::from_parts(
@@ -131,10 +138,14 @@ impl Renderer<'_> {
             }
         };
 
+        if transparent && self.ctx.blend_mode().compose == peniko::Compose::SrcOver {
+            return None;
+        }
+
         self.ctx.set_paint_transform(paint_transform);
         self.ctx.set_paint(paint);
 
-        clip_path
+        Some(clip_path)
     }
 }
 

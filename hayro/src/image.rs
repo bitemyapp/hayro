@@ -791,13 +791,16 @@ impl Renderer<'_> {
                                 );
                                 self.ctx.set_transform(transform);
 
-                                let clip_path = self.set_paint(paint, || stencil_rect, false);
-                                if let Some(clip_path) = clip_path.as_ref() {
-                                    self.push_clip_path_inner(clip_path, FillRule::NonZero);
-                                }
-                                self.ctx.fill_rect(&stencil_rect);
-                                if clip_path.is_some() {
-                                    self.ctx.pop_clip();
+                                if let Some(clip_path) =
+                                    self.set_paint(paint, || stencil_rect, false)
+                                {
+                                    if let Some(clip_path) = clip_path.as_ref() {
+                                        self.push_clip_path_inner(clip_path, FillRule::NonZero);
+                                    }
+                                    self.ctx.fill_rect(&stencil_rect);
+                                    if clip_path.is_some() {
+                                        self.ctx.pop_clip();
+                                    }
                                 }
 
                                 self.ctx.pop_layer();

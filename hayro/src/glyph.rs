@@ -141,7 +141,9 @@ impl Renderer<'_> {
         props: &DrawProps<'_>,
         color: &Color,
     ) {
-        let clip_path = self.begin_fill_run(props, Rect::ZERO);
+        let Some(clip_path) = self.begin_fill_run(props, Rect::ZERO) else {
+            return;
+        };
         let color = solid(color);
         let mut coverage = Vec::new();
 
@@ -319,16 +321,18 @@ impl Renderer<'_> {
             .unwrap_or(Rect::ZERO)
     }
 
-    fn begin_fill_run(&mut self, props: &DrawProps<'_>, bbox: Rect) -> Option<BezPath> {
+    /// Set up drawing a run, and return the clip path pushed for it, or `None` if the paint
+    /// can't change any pixel.
+    fn begin_fill_run(&mut self, props: &DrawProps<'_>, bbox: Rect) -> Option<Option<BezPath>> {
         self.ctx.set_fill_rule(convert_fill_rule(FillRule::NonZero));
         self.apply_draw_props(props);
 
-        let clip_path = self.set_paint(&props.paint, || bbox, false);
+        let clip_path = self.set_paint(&props.paint, || bbox, false)?;
         if let Some(clip_path) = clip_path.as_ref() {
             self.push_clip_path_inner(clip_path, FillRule::NonZero);
         }
 
-        clip_path
+        Some(clip_path)
     }
 
     fn begin_stroke_run(
@@ -336,16 +340,16 @@ impl Renderer<'_> {
         props: &DrawProps<'_>,
         stroke_props: &StrokeProps,
         bbox: Rect,
-    ) -> Option<BezPath> {
+    ) -> Option<Option<BezPath>> {
         self.apply_draw_props(props);
         self.set_stroke_properties(stroke_props, true);
 
-        let clip_path = self.set_paint(&props.paint, || bbox, true);
+        let clip_path = self.set_paint(&props.paint, || bbox, true)?;
         if let Some(clip_path) = clip_path.as_ref() {
             self.push_clip_path_inner(clip_path, FillRule::NonZero);
         }
 
-        clip_path
+        Some(clip_path)
     }
 
     fn finish_run(&mut self, clip_path: Option<BezPath>) {
@@ -359,7 +363,10 @@ impl Renderer<'_> {
             Paint::Color(color) => self.fill_cached_glyphs(glyph_run, props, color),
             Paint::Pattern(_) => {
                 let outlines = self.transformed_outlines(glyph_run);
-                let clip_path = self.begin_fill_run(props, Self::outline_bbox(&outlines));
+                let Some(clip_path) = self.begin_fill_run(props, Self::outline_bbox(&outlines))
+                else {
+                    return;
+                };
                 for outline in &outlines {
                     self.ctx.fill_path(outline);
                 }
@@ -376,7 +383,9 @@ impl Renderer<'_> {
     ) {
         match &props.paint {
             Paint::Color(_) => {
-                let clip_path = self.begin_stroke_run(props, stroke_props, Rect::ZERO);
+                let Some(clip_path) = self.begin_stroke_run(props, stroke_props, Rect::ZERO) else {
+                    return;
+                };
                 for glyph in glyph_run.glyphs() {
                     let Glyph::Outline(outline) = &**glyph else {
                         continue;
@@ -389,8 +398,11 @@ impl Renderer<'_> {
             }
             Paint::Pattern(_) => {
                 let outlines = self.transformed_outlines(glyph_run);
-                let clip_path =
-                    self.begin_stroke_run(props, stroke_props, Self::outline_bbox(&outlines));
+                let Some(clip_path) =
+                    self.begin_stroke_run(props, stroke_props, Self::outline_bbox(&outlines))
+                else {
+                    return;
+                };
                 for outline in &outlines {
                     self.ctx.stroke_path(outline);
                 }

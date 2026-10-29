@@ -62,7 +62,9 @@ impl Renderer<'_> {
             return;
         }
 
-        let clip_path = self.set_paint(&props.paint, || path.bounding_box(), true);
+        let Some(clip_path) = self.set_paint(&props.paint, || path.bounding_box(), true) else {
+            return;
+        };
         if let Some(clip_path) = clip_path.as_ref() {
             self.push_clip_path_inner(clip_path, FillRule::NonZero);
         }
@@ -89,7 +91,9 @@ impl Renderer<'_> {
         self.ctx.set_fill_rule(convert_fill_rule(fill_rule));
         self.apply_draw_props(&props);
 
-        let clip_path = self.set_paint(&props.paint, || path.bounding_box(), false);
+        let Some(clip_path) = self.set_paint(&props.paint, || path.bounding_box(), false) else {
+            return;
+        };
         if let Some(clip_path) = clip_path.as_ref() {
             self.push_clip_path_inner(clip_path, fill_rule);
         }
@@ -141,7 +145,9 @@ impl Renderer<'_> {
                 self.ctx.set_fill_rule(convert_fill_rule(*fill_rule));
                 self.apply_draw_props(&props);
 
-                let clip_path = self.set_paint(&props.paint, || *rect, false);
+                let Some(clip_path) = self.set_paint(&props.paint, || *rect, false) else {
+                    return;
+                };
                 if let Some(clip_path) = clip_path.as_ref() {
                     self.push_clip_path_inner(clip_path, *fill_rule);
                 }
