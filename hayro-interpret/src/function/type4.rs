@@ -225,7 +225,7 @@ fn eval_inner(procedure: &[PostScriptOp], arg_stack: &mut InterpreterStack) -> O
 
     for op in procedure {
         match op {
-            PostScriptOp::Number(n) => arg_stack.push(Argument::Float(n.as_f64() as f32))?,
+            PostScriptOp::Number(n) => arg_stack.push(Argument::Float(*n))?,
             PostScriptOp::Abs => {
                 one_f!(|n: f32| n.abs());
             }
@@ -461,7 +461,8 @@ fn parse_procedure_inner(r: &mut Reader<'_>) -> Option<Vec<PostScriptOp>> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum PostScriptOp {
-    Number(Number),
+    /// A number, as the `f32` it's pushed as.
+    Number(f32),
     Abs,
     Add,
     Atan,
@@ -510,7 +511,7 @@ impl PostScriptOp {
     fn from_reader(r: &mut Reader<'_>, stack: &mut ParseStack) -> Option<Self> {
         let op = if let Some(n) = r.read::<Number>(&ReaderContext::dummy()) {
             // TODO: Support radix numbers
-            Self::Number(n)
+            Self::Number(n.as_f64() as f32)
         } else {
             let op = r.read::<content::Operator<'_>>(&ReaderContext::dummy())?;
             match op.as_ref() {
@@ -577,8 +578,6 @@ mod tests {
     use std::f32::consts::LN_10;
     use std::sync::Arc;
 
-    use hayro_syntax::object::Number;
-
     #[test]
     fn lex_1() {
         let program = b"{ copy dup 2.0 exch roll }";
@@ -589,7 +588,7 @@ mod tests {
             vec![
                 PostScriptOp::Copy,
                 PostScriptOp::Dup,
-                PostScriptOp::Number(Number::from_f32(2.0)),
+                PostScriptOp::Number(2.0),
                 PostScriptOp::Exch,
                 PostScriptOp::Roll,
             ]
@@ -606,8 +605,8 @@ mod tests {
             vec![
                 PostScriptOp::If(vec![PostScriptOp::Dup, PostScriptOp::Exch]),
                 PostScriptOp::IfElse(
-                    vec![PostScriptOp::Number(Number::from_i32(0))],
-                    vec![PostScriptOp::Number(Number::from_i32(1))]
+                    vec![PostScriptOp::Number(0.0)],
+                    vec![PostScriptOp::Number(1.0)]
                 )
             ]
         );
