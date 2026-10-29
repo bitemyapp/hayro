@@ -371,6 +371,18 @@ impl EncodedShadingPattern {
                 x.filter(|&x| x < *width)
             })
             .collect();
+        // Where the columns with samples are one stretch of consecutive ones: its first
+        // column and length.
+        let consecutive = columns.iter().position(Option::is_some).and_then(|first| {
+            let count = columns[first..].iter().take_while(|x| x.is_some()).count();
+            let start = columns[first]?;
+            let consecutive = columns[first..first + count]
+                .iter()
+                .enumerate()
+                .all(|(i, x)| *x == Some(start + i));
+            let rest_empty = columns[first + count..].iter().all(Option::is_none);
+            (consecutive && rest_empty).then_some((first, count))
+        });
         let mut point = grid.start;
         for _ in 0..grid.height {
             let row = (point.y as u16)
@@ -383,6 +395,25 @@ impl EncodedShadingPattern {
                 data.extend(std::iter::repeat_n(background, grid.width as usize));
                 continue;
             };
+            // Usually the columns are consecutive samples: read them as a slice of the row.
+            if let Some((first, count)) = consecutive
+                && *stride > 0
+            {
+                let samples = row * width + columns[first].unwrap();
+                let samples = samples..samples + count;
+                data.extend(std::iter::repeat_n(background, first));
+                data.extend(
+                    components[samples.start * stride..samples.end * stride]
+                        .chunks_exact(*stride)
+                        .zip(&covered[samples])
+                        .map(|(c, &covered)| if covered { texel(c) } else { background }),
+                );
+                data.extend(std::iter::repeat_n(
+                    background,
+                    grid.width as usize - first - count,
+                ));
+                continue;
+            }
             data.extend(columns.iter().map(|x| match x {
                 Some(x) if covered[row * width + x] => {
                     texel(&components[(row * width + x) * stride..][..*stride])
@@ -651,14 +682,40 @@ fn clip(span: Range<u16>, within: &Range<u16>) -> Range<u16> {
     span.start.max(within.start)..span.end.min(within.end)
 }
 
-/// Call `f` with each pixel within `xs` by `ys` that the triangle, mapped by `transform`,
-/// covers, and the weights of its three vertices' colors there.
-fn for_each_pixel(
+/// Pixels along a row that a triangle covers, and the weights of its vertices' colors at
+/// each of them.
+struct Run {
+    y: u16,
+    xs: Range<u16>,
+    /// The weights of the second and third vertices at the first pixel, and how they change
+    /// from pixel to pixel (stepping them differs from computing them at each pixel only in
+    /// the last bits).
+    v: f64,
+    w: f64,
+    dv: f64,
+    dw: f64,
+}
+
+impl Run {
+    #[inline(always)]
+    fn weights(&self) -> impl Iterator<Item = [f32; 3]> {
+        let (mut v, mut w, dv, dw) = (self.v, self.w, self.dv, self.dw);
+        self.xs.clone().map(move |_| {
+            let weights = [(1.0 - v - w) as f32, v as f32, w as f32];
+            (v, w) = (v + dv, w + dw);
+            weights
+        })
+    }
+}
+
+/// Call `f` with each run of pixels within `xs` by `ys` that the triangle, mapped by
+/// `transform`, covers.
+fn for_each_run(
     t: &Triangle,
     transform: Affine,
     xs: &Range<u16>,
     ys: &Range<u16>,
-    mut f: impl FnMut(u16, u16, [f32; 3]),
+    mut f: impl FnMut(Run),
 ) {
     let [a, b, c] = [t.p0.point, t.p1.point, t.p2.point].map(|p| transform * p);
     let triangle = kurbo::Triangle::new(a, b, c);
@@ -673,9 +730,7 @@ fn for_each_pixel(
     let (d00, d01, d11) = (v0.dot(v0), v0.dot(v1), v1.dot(v1));
     let denom = d00 * d11 - d01 * d01;
 
-    // The weights of `b` and `c` at the start of a run of a row, and how they change from
-    // pixel to pixel along it (stepping them from there differs from computing them at each
-    // pixel only in the last bits).
+    // The weights of `b` and `c` at a pixel, and how they change along a row.
     let weights = |x: u16, y: u16| {
         let v2 = Point::new(x as f64, y as f64) - a;
         let (d20, d21) = (v2.dot(v0), v2.dot(v1));
@@ -688,10 +743,16 @@ fn for_each_pixel(
         (d00 * v1.x - d01 * v0.x) / denom,
     );
     let mut run = |xs: Range<u16>, y: u16| {
-        let (mut v, mut w) = weights(xs.start, y);
-        for x in xs {
-            f(x, y, [(1.0 - v - w) as f32, v as f32, w as f32]);
-            (v, w) = (v + dv, w + dw);
+        if !xs.is_empty() {
+            let (v, w) = weights(xs.start, y);
+            f(Run {
+                y,
+                xs,
+                v,
+                w,
+                dv,
+                dw,
+            });
         }
     };
 
@@ -803,6 +864,14 @@ fn interpolate_n<const N: usize>(colors: [&[f32]; 3], [u, v, w]: [f32; 3], out: 
     }
 }
 
+/// [`interpolate_n`] at each pixel of a run, into its pixels' components.
+#[inline(always)]
+fn fill_run<const N: usize>(colors: [&[f32]; 3], run: &Run, out: &mut [f32]) {
+    for (out, weights) in out.as_chunks_mut::<N>().0.iter_mut().zip(run.weights()) {
+        interpolate_n::<N>(colors, weights, out);
+    }
+}
+
 /// A triangle's vertex colors.
 #[inline]
 fn colors(t: &Triangle) -> [&[f32]; 3] {
@@ -843,17 +912,24 @@ fn sample_triangles(triangles: &[Triangle], transform: Affine, target: Rect) -> 
 
     for t in triangles {
         let colors = colors(t);
-        for_each_pixel(t, transform, &xs, &ys, |x, y, weights| {
-            let i = (y - y0) as usize * width + (x - x0) as usize;
-            let out = &mut components[i * stride..][..stride];
+        for_each_run(t, transform, &xs, &ys, |run| {
+            let start = (run.y - y0) as usize * width + (run.xs.start - x0) as usize;
+            let pixels = start..start + run.xs.len();
+            covered[pixels.clone()].fill(true);
+            let out = &mut components[pixels.start * stride..pixels.end * stride];
             // The usual numbers of components, unrolled.
             match stride {
-                1 => interpolate_n::<1>(colors, weights, out),
-                3 => interpolate_n::<3>(colors, weights, out),
-                4 => interpolate_n::<4>(colors, weights, out),
-                _ => interpolate(colors, weights, out),
+                1 => fill_run::<1>(colors, &run, out),
+                3 => fill_run::<3>(colors, &run, out),
+                4 => fill_run::<4>(colors, &run, out),
+                // Vertices without colors have none to interpolate.
+                0 => {}
+                _ => {
+                    for (out, weights) in out.chunks_exact_mut(stride).zip(run.weights()) {
+                        interpolate(colors, weights, out);
+                    }
+                }
             }
-            covered[i] = true;
         });
     }
 
@@ -877,10 +953,12 @@ fn sample_triangles_sparse(
     let (xs, ys) = pixel_span(target);
 
     for t in triangles {
-        for_each_pixel(t, transform, &xs, &ys, |x, y, weights| {
-            let mut color = ColorComponents::from_elem(0.0, t.p0.colors.len());
-            interpolate(colors(t), weights, &mut color);
-            map.insert((x, y), color);
+        for_each_run(t, transform, &xs, &ys, |run| {
+            for (x, weights) in run.xs.clone().zip(run.weights()) {
+                let mut color = ColorComponents::from_elem(0.0, t.p0.colors.len());
+                interpolate(colors(t), weights, &mut color);
+                map.insert((x, run.y), color);
+            }
         });
     }
 
