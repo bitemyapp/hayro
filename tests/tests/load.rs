@@ -75,8 +75,9 @@ pub(crate) fn tests() -> Vec<Test> {
         ))
     });
 
-    let units: [(&str, fn()); 4] = [
+    let units: [(&str, fn()); 5] = [
         ("load::metadata_in_object_stream", metadata_in_object_stream),
+        ("load::permissions", permissions),
         (
             "load::concurrent_object_stream_resolution",
             concurrent_object_stream_resolution,
@@ -137,6 +138,24 @@ fn metadata_in_object_stream() {
     };
 
     assert_eq!(pdf.metadata(), &expected);
+}
+
+fn permissions() {
+    // Not encrypted.
+    let pdf = Pdf::new(read("pdfs/custom/path_re_current_point.pdf")).unwrap();
+    assert_eq!(pdf.permissions(), None);
+
+    // Encrypted, everything permitted (P is -1).
+    let pdf = Pdf::new(read("pdfs/custom/encrypted_aes_128.pdf")).unwrap();
+    let permissions = pdf.permissions().unwrap();
+    assert_eq!(permissions.bits(), u32::MAX);
+    assert!(permissions.can_copy() && permissions.can_print());
+
+    // Encrypted by qpdf 12 with `--extract=n --print=none` (P is -2072).
+    let pdf = Pdf::new(read("pdfs/custom/encrypted_no_copy_no_print.pdf")).unwrap();
+    let permissions = pdf.permissions().unwrap();
+    assert_eq!(permissions.bits(), -2072_i32 as u32);
+    assert!(!permissions.can_copy() && !permissions.can_print());
 }
 
 fn concurrent_object_stream_resolution() {

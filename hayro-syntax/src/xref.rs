@@ -8,7 +8,7 @@ use crate::object::ObjectIdentifier;
 use crate::object::Stream;
 use crate::object::dict::keys::{
     AUTHOR, CREATION_DATE, CREATOR, ENCRYPT, FIRST, ID, INDEX, INFO, KEYWORDS, MOD_DATE, N,
-    OCPROPERTIES, PAGES, PREV, PRODUCER, ROOT, SIZE, SUBJECT, TITLE, TYPE, VERSION, W, XREF_STM,
+    OCPROPERTIES, P, PAGES, PREV, PRODUCER, ROOT, SIZE, SUBJECT, TITLE, TYPE, VERSION, W, XREF_STM,
 };
 use crate::object::dict::probe_dict;
 use crate::object::indirect::IndirectObject;
@@ -346,11 +346,17 @@ impl XRef {
                 let version = root
                     .get::<Name<'_>>(VERSION)
                     .and_then(|v| PdfVersion::from_bytes(v.deref()));
+                // The bits of the `P` entry, read as the decryptor reads them.
+                let permissions = trailer_dict
+                    .get::<Dict<'_>>(ENCRYPT)
+                    .and_then(|encrypt| encrypt.get::<i64>(P))
+                    .map(|raw| raw as i32 as u32);
 
                 let td = TrailerData {
                     pages_ref: pages_ref.into(),
                     root_ref: root_ref.into(),
                     version,
+                    permissions,
                 };
 
                 (td, has_ocgs, metadata)
@@ -363,6 +369,7 @@ impl XRef {
                     pages_ref: pages_ref.into(),
                     root_ref,
                     version: None,
+                    permissions: None,
                 };
 
                 (td, false, Metadata::default())
@@ -670,6 +677,8 @@ pub(crate) struct TrailerData {
     pub(crate) pages_ref: ObjectIdentifier,
     pub(crate) root_ref: ObjectIdentifier,
     pub(crate) version: Option<PdfVersion>,
+    /// The encryption dictionary's `P` entry, for an encrypted document.
+    pub(crate) permissions: Option<u32>,
 }
 
 impl TrailerData {
@@ -678,6 +687,7 @@ impl TrailerData {
             pages_ref: ObjectIdentifier::new(0, 0),
             root_ref: ObjectIdentifier::new(0, 0),
             version: None,
+            permissions: None,
         }
     }
 }

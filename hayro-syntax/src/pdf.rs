@@ -105,6 +105,34 @@ impl Pdf {
     pub fn metadata(&self) -> &Metadata {
         self.xref.metadata()
     }
+
+    /// Return what the author of an encrypted document permits, or `None` if it isn't
+    /// encrypted.
+    pub fn permissions(&self) -> Option<Permissions> {
+        self.xref.trailer_data().permissions.map(Permissions)
+    }
+}
+
+/// What the author of an encrypted document permits: the `P` entry of its encryption
+/// dictionary (ISO 32000-2, table 22).
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct Permissions(u32);
+
+impl Permissions {
+    /// The entry's bits.
+    pub fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// Whether the document's text and graphics may be copied (bit 5).
+    pub fn can_copy(self) -> bool {
+        self.0 & (1 << 4) != 0
+    }
+
+    /// Whether the document may be printed (bit 3).
+    pub fn can_print(self) -> bool {
+        self.0 & (1 << 2) != 0
+    }
 }
 
 fn find_version(data: &[u8]) -> Option<PdfVersion> {
