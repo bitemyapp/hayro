@@ -320,7 +320,7 @@ impl EncodedShadingPattern {
                 return texel_at(t);
             }
             let step = if span > 0.0 {
-                ((t - lo) / span * GRADIENT_STEPS as f32).round() as usize
+                round_up_half((t - lo) / span * GRADIENT_STEPS as f32)
             } else {
                 0
             };
@@ -1037,7 +1037,7 @@ impl<'a, T: Copy> GradientLut<'a, T> {
             return self.background;
         };
 
-        let i = (t * GRADIENT_STEPS as f32).round() as usize;
+        let i = round_up_half(t * GRADIENT_STEPS as f32);
         *self.colors[i].get_or_insert_with(|| {
             let t = i as f32 / GRADIENT_STEPS as f32;
             (self.convert)(
@@ -1252,4 +1252,12 @@ fn radial_pos(
         (None, Some(max)) => Some(max),
         (None, None) => None,
     }
+}
+
+/// `x.round() as usize` for an `x` that isn't negative, without the call to `roundf` that
+/// x86-64 without SSE 4.1 makes: its fraction is exact, so halves round up as `round` does.
+#[inline(always)]
+fn round_up_half(x: f32) -> usize {
+    let whole = x as usize;
+    whole + usize::from(x - whole as f32 >= 0.5)
 }
