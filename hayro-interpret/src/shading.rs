@@ -914,16 +914,8 @@ fn generate_patch_triangles<F, I>(
                 triangle
             };
 
-            buffer.push(inflate(Triangle::new(
-                v00.clone(),
-                v10.clone(),
-                v01.clone(),
-            )));
-            buffer.push(inflate(Triangle::new(
-                v10.clone(),
-                v11.clone(),
-                v01.clone(),
-            )));
+            buffer.push(inflate(Triangle::new(v00, v10.clone(), v01.clone())));
+            buffer.push(inflate(Triangle::new(v10, v11, v01)));
         }
     }
 }

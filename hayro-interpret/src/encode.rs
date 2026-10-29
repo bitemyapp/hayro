@@ -672,9 +672,30 @@ impl MeshSamples {
 /// The device pixels a triangle's bounding box covers, as in [`sample_triangles`].
 fn pixel_span(bbox: Rect) -> (Range<u16>, Range<u16>) {
     (
-        (bbox.x0.floor() as u16)..(bbox.x1.ceil() as u16),
-        (bbox.y0.floor() as u16)..(bbox.y1.ceil() as u16),
+        floor_u16(bbox.x0)..ceil_u16(bbox.x1),
+        floor_u16(bbox.y0)..ceil_u16(bbox.y1),
     )
+}
+
+/// `x.floor() as u16`, without the call to `floor` that x86-64 without SSE 4.1 makes.
+#[inline(always)]
+fn floor_u16(x: f64) -> u16 {
+    // `as` saturates (and makes NaN 0) as the cast of the floor would.
+    let i = x as i64;
+    let i = if i as f64 > x { i - 1 } else { i };
+    i.clamp(0, u16::MAX as i64) as u16
+}
+
+/// `x.ceil() as u16`, likewise.
+#[inline(always)]
+fn ceil_u16(x: f64) -> u16 {
+    let i = x as i64;
+    let i = if (i as f64) < x {
+        i.saturating_add(1)
+    } else {
+        i
+    };
+    i.clamp(0, u16::MAX as i64) as u16
 }
 
 /// The part of a span of pixels within another.
