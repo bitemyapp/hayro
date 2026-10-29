@@ -212,6 +212,12 @@ impl<'a> RenderCache<'a> {
             image_cache: Rc::new(RefCell::new(image::ImageCache::default())),
         }
     }
+
+    /// The cache of the document's parsed fonts and other objects, for interpreting its
+    /// pages into other devices (to read their text, say) without parsing them again.
+    pub fn interpreter_cache(&self) -> &InterpreterCache<'a> {
+        &self.interpreter_cache
+    }
 }
 
 /// Settings for rendering a page.
