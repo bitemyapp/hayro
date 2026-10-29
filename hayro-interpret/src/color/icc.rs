@@ -10,11 +10,14 @@ struct ICCColorRepr {
     number_components: usize,
     is_srgb: bool,
     is_lab: bool,
-    src_profile: Option<ColorProfile>,
+    src_profile: ColorProfile,
     src_layout: Layout,
     transform_u8: OnceLock<Option<Arc<Transform8BitExecutor>>>,
     transform_in_place_u8: Option<Arc<dyn InPlaceTransformExecutor<u8> + Send + Sync>>,
-    transform_in_place_luma_u8: Option<Arc<dyn InPlaceTransformExecutor<u8> + Send + Sync>>,
+    /// Built the first time it's needed (for a soft mask), since whether it can be doesn't
+    /// change how the space draws.
+    transform_in_place_luma_u8:
+        OnceLock<Option<Arc<dyn InPlaceTransformExecutor<u8> + Send + Sync>>>,
 }
 
 #[derive(Clone)]
@@ -55,19 +58,6 @@ impl ICCProfile {
         };
 
         let dest_profile = ColorProfile::new_srgb();
-        let transform_in_place_luma_u8 = if src_layout == Layout::Gray {
-            let mut dest_luma_profile = ColorProfile::new_gray_with_gamma(1.0);
-            dest_luma_profile.gray_trc = dest_profile.red_trc.clone();
-            src_profile
-                .create_in_place_transform_8bit(
-                    src_layout,
-                    &dest_luma_profile,
-                    TransformOptions::default(),
-                )
-                .ok()
-        } else {
-            None
-        };
         let transform_in_place_u8 = if src_layout == Layout::Rgb {
             src_profile
                 .create_in_place_transform_8bit(
@@ -79,8 +69,8 @@ impl ICCProfile {
         } else {
             None
         };
-        let (src_profile, transform_u8) = if transform_in_place_u8.is_some() {
-            (Some(src_profile), OnceLock::new())
+        let transform_u8 = if transform_in_place_u8.is_some() {
+            OnceLock::new()
         } else {
             let transform_u8 = src_profile
                 .create_transform_8bit(
@@ -90,7 +80,7 @@ impl ICCProfile {
                     TransformOptions::default(),
                 )
                 .ok()?;
-            (None, OnceLock::from(Some(transform_u8)))
+            OnceLock::from(Some(transform_u8))
         };
 
         Some(Self(Arc::new(ICCColorRepr {
@@ -101,7 +91,7 @@ impl ICCProfile {
             src_layout,
             transform_u8,
             transform_in_place_u8,
-            transform_in_place_luma_u8,
+            transform_in_place_luma_u8: OnceLock::new(),
         })))
     }
 
@@ -123,7 +113,6 @@ impl ICCProfile {
             .get_or_init(|| {
                 self.0
                     .src_profile
-                    .as_ref()?
                     .create_transform_8bit(
                         self.0.src_layout,
                         &ColorProfile::new_srgb(),
@@ -166,6 +155,18 @@ impl ToLuma for ICCProfile {
 
         self.0
             .transform_in_place_luma_u8
+            .get_or_init(|| {
+                let mut dest_luma_profile = ColorProfile::new_gray_with_gamma(1.0);
+                dest_luma_profile.gray_trc = ColorProfile::new_srgb().red_trc;
+                self.0
+                    .src_profile
+                    .create_in_place_transform_8bit(
+                        self.0.src_layout,
+                        &dest_luma_profile,
+                        TransformOptions::default(),
+                    )
+                    .ok()
+            })
             .as_ref()?
             .transform(input)
             .ok()?;
