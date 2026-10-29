@@ -2,6 +2,7 @@
 
 use crate::color::{AlphaColor, ColorComponents, ColorSpace};
 use crate::function::MAX_COMPONENTS;
+use crate::gradient::FittedStops;
 use crate::interpret::state::ActiveTransferFunction;
 use crate::pattern::ShadingPattern;
 use crate::shading::{ShadingFunction, ShadingType, Triangle};
@@ -51,6 +52,7 @@ pub struct EncodedRadialAxialShading {
     pub(crate) params: RadialAxialParams,
     pub(crate) domain: [f32; 2],
     pub(crate) extend: [bool; 2],
+    pub(crate) fitted_stops: Arc<FittedStops>,
 }
 
 /// Encoded sampled mesh shading.
@@ -500,8 +502,14 @@ impl ShadingPattern {
                 extend,
                 axial,
             } => {
-                let (encoded, initial_transform) =
-                    encode_axial_shading(*coords, *domain, function, *extend, *axial);
+                let (encoded, initial_transform) = encode_axial_shading(
+                    *coords,
+                    *domain,
+                    function,
+                    *extend,
+                    *axial,
+                    &self.shading.fitted_stops,
+                );
 
                 base_transform = initial_transform * self.matrix.inverse();
 
@@ -584,6 +592,7 @@ fn encode_axial_shading(
     function: &ShadingFunction,
     extend: [bool; 2],
     is_axial: bool,
+    fitted_stops: &Arc<FittedStops>,
 ) -> (EncodedShadingType, Affine) {
     let initial_transform;
 
@@ -617,6 +626,7 @@ fn encode_axial_shading(
             params,
             domain,
             extend,
+            fitted_stops: fitted_stops.clone(),
         }),
         initial_transform,
     )

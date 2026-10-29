@@ -6,6 +6,7 @@ use crate::CacheKey;
 use crate::cache::Cache;
 use crate::color::{ColorComponents, ColorSpace};
 use crate::function::{Function, interpolate};
+use crate::gradient::FittedStops;
 use crate::util::{Float32Ext, PointExt, RectExt, hash128};
 use hayro_syntax::bit_reader::BitReader;
 use hayro_syntax::object::Array;
@@ -148,6 +149,7 @@ pub struct Shading {
     pub background: Option<SmallVec<[f32; 4]>>,
     pub(crate) mesh_bounds: Option<kurbo::Rect>,
     patch_triangles: Arc<PatchTriangles>,
+    pub(crate) fitted_stops: Arc<FittedStops>,
 }
 
 impl Shading {
@@ -388,6 +390,7 @@ impl Shading {
             background,
             mesh_bounds,
             patch_triangles: Arc::default(),
+            fitted_stops: Arc::default(),
         })
     }
 }

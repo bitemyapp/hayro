@@ -4,10 +4,13 @@
 //! radial-axial shadings it's useful if we can instead approximate them by
 //! SVG-like sRGB gradients.
 
+use crate::CacheKey;
 use crate::color::AlphaColor;
 use crate::encode::{EncodedRadialAxialShading, EncodedShadingPattern, RadialAxialParams};
 use crate::function::MAX_COMPONENTS;
+use crate::util::hash128;
 use kurbo::{Affine, Circle, Point, Rect, Shape};
+use std::sync::{Arc, Mutex};
 
 const MAX_GRADIENT_SUBDIVISION_DEPTH: u8 = 10;
 const RADIAL_EPSILON: f64 = 1.0e-6;
@@ -45,6 +48,7 @@ pub enum SvgGradientKind {
 }
 
 /// A color stop for an SVG-like gradient.
+#[derive(Clone, Copy, Debug)]
 pub struct SvgGradientStop {
     /// Normalized offset.
     pub offset: f32,
@@ -79,12 +83,34 @@ impl EncodedRadialAxialShading {
         Some(SvgGradient {
             kind: self.native_gradient_kind(),
             transform: pattern.base_transform.inverse(),
-            stops: approximate_gradient_stops(
-                |t| self.sample_t(pattern, t),
-                &self.normalized_stitching_bounds(),
-                tolerance,
-            ),
+            stops: self.stops(pattern, tolerance).to_vec(),
         })
+    }
+
+    /// The stops approximating the shading's colors, fitted once for each way it's painted:
+    /// they depend on the pattern's opacity and transfer function, not on what's filled.
+    fn stops(&self, pattern: &EncodedShadingPattern, tolerance: f32) -> Arc<[SvgGradientStop]> {
+        let key = hash128(&(
+            pattern.opacity.to_bits(),
+            pattern.transfer_function.as_ref().map(|tf| tf.cache_key()),
+            tolerance.to_bits(),
+        ));
+        let mut fitted = self.fitted_stops.0.lock().unwrap();
+        if let Some((fitted_key, stops)) = &*fitted
+            && *fitted_key == key
+        {
+            return stops.clone();
+        }
+
+        let stops: Arc<[SvgGradientStop]> = approximate_gradient_stops(
+            |t| self.sample_t(pattern, t),
+            &self.normalized_stitching_bounds(),
+            tolerance,
+        )
+        .into();
+        *fitted = Some((key, stops.clone()));
+
+        stops
     }
 
     fn native_gradient_kind(&self) -> SvgGradientKind {
@@ -220,6 +246,11 @@ fn circle_outside_bbox(circle: Circle, bbox: Rect) -> bool {
     !circle.contains(closest)
 }
 
+/// The stops last fitted to an axial or radial shading, with a key for how it was painted;
+/// see [`EncodedRadialAxialShading::stops`]. Shared by the shading's encodings.
+#[derive(Debug, Default)]
+pub(crate) struct FittedStops(Mutex<Option<(u128, Arc<[SvgGradientStop]>)>>);
+
 fn approximate_gradient_stops(
     mut sample: impl FnMut(f32) -> [f32; 4],
     breakpoints: &[f32],
@@ -254,6 +285,7 @@ fn approximate_gradient_stops(
                 offset: end_offset,
                 color: end_color,
             },
+            None,
             tolerance.max(0.0),
             0,
         );
@@ -268,11 +300,14 @@ struct GradientSample {
     color: [f32; 4],
 }
 
+/// `known` is a sample taken in the interval this one halves (a quarter of the way along it),
+/// used for this interval's middle where it's at the same offset rather than sampled again.
 fn approximate_gradient_interval(
     sample: &mut impl FnMut(f32) -> [f32; 4],
     stops: &mut Vec<SvgGradientStop>,
     start: GradientSample,
     end: GradientSample,
+    known: Option<GradientSample>,
     tolerance: f32,
     depth: u8,
 ) {
@@ -282,7 +317,10 @@ fn approximate_gradient_interval(
     let three_quarter_offset = start.offset + offset_delta * 0.75;
 
     let quarter_color = sample(quarter_offset);
-    let mid_color = sample(mid_offset);
+    let mid_color = match known {
+        Some(known) if known.offset == mid_offset => known.color,
+        _ => sample(mid_offset),
+    };
     let three_quarter_color = sample(three_quarter_offset);
 
     if color_error(quarter_color, lerp_color(start.color, end.color, 0.25)) <= tolerance
@@ -306,8 +344,33 @@ fn approximate_gradient_interval(
         color: mid_color,
     };
 
-    approximate_gradient_interval(sample, stops, start, mid, tolerance, depth + 1);
-    approximate_gradient_interval(sample, stops, mid, end, tolerance, depth + 1);
+    let quarter = GradientSample {
+        offset: quarter_offset,
+        color: quarter_color,
+    };
+    let three_quarter = GradientSample {
+        offset: three_quarter_offset,
+        color: three_quarter_color,
+    };
+
+    approximate_gradient_interval(
+        sample,
+        stops,
+        start,
+        mid,
+        Some(quarter),
+        tolerance,
+        depth + 1,
+    );
+    approximate_gradient_interval(
+        sample,
+        stops,
+        mid,
+        end,
+        Some(three_quarter),
+        tolerance,
+        depth + 1,
+    );
 }
 
 fn lerp_color(c0: [f32; 4], c1: [f32; 4], t: f32) -> [f32; 4] {
