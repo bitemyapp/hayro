@@ -12,26 +12,66 @@ pub(crate) mod flate {
 
     #[cfg(feature = "unsafe")]
     pub(crate) fn decode(data: &[u8], params: &Dict<'_>) -> Option<Vec<u8>> {
-        use flate2::read::{DeflateDecoder, ZlibDecoder};
-        use std::io::Read;
-
-        fn zlib_stream(data: &[u8]) -> Option<Vec<u8>> {
-            let mut decoder = ZlibDecoder::new(data);
-            let mut result = Vec::new();
-            decoder.read_to_end(&mut result).ok().map(|_| result)
-        }
-
-        fn deflate_stream(data: &[u8]) -> Option<Vec<u8>> {
-            let mut decoder = DeflateDecoder::new(data);
-            let mut result = Vec::new();
-            decoder.read_to_end(&mut result).ok().map(|_| result)
-        }
-
-        let decoded = zlib_stream(data)
-            .or_else(|| deflate_stream(data))
+        let decoded = inflate(data, true)
+            .or_else(|| inflate(data, false))
             .or_else(|| fallback::decode(data))?;
         let params = PredictorParams::from_params(params);
         apply_predictor(decoded, &params)
+    }
+
+    /// Decompress a zlib stream (or, without `zlib_header`, a raw deflate one) as
+    /// `flate2::read::ZlibDecoder::read_to_end` does: all of it, or `None` if it's corrupt or
+    /// ends early. Each thread keeps its decompressors, as setting one up zeroes its 32 KiB
+    /// window, which cost more than decompressing a small stream.
+    #[cfg(feature = "unsafe")]
+    fn inflate(data: &[u8], zlib_header: bool) -> Option<Vec<u8>> {
+        use flate2::Decompress;
+        use std::cell::RefCell;
+
+        thread_local! {
+            static DECOMPRESSORS: RefCell<[Option<Decompress>; 2]> =
+                const { RefCell::new([None, None]) };
+        }
+
+        DECOMPRESSORS.with(|decompressors| match decompressors.try_borrow_mut() {
+            Ok(mut decompressors) => {
+                let decompress = decompressors[zlib_header as usize]
+                    .get_or_insert_with(|| Decompress::new(zlib_header));
+                decompress.reset(zlib_header);
+                inflate_with(decompress, data)
+            }
+            Err(_) => inflate_with(&mut Decompress::new(zlib_header), data),
+        })
+    }
+
+    /// The loop of `flate2::zio::read`, into a vector.
+    #[cfg(feature = "unsafe")]
+    fn inflate_with(decompress: &mut flate2::Decompress, mut input: &[u8]) -> Option<Vec<u8>> {
+        use flate2::{FlushDecompress, Status};
+
+        let mut output = Vec::with_capacity(input.len().saturating_mul(4).clamp(64, 1 << 20));
+        loop {
+            if output.len() == output.capacity() {
+                output.reserve(output.capacity());
+            }
+            let eof = input.is_empty();
+            let flush = if eof {
+                FlushDecompress::Finish
+            } else {
+                FlushDecompress::None
+            };
+            let (before_in, before_out) = (decompress.total_in(), decompress.total_out());
+            let status = decompress.decompress_vec(input, &mut output, flush).ok()?;
+            input = &input[(decompress.total_in() - before_in) as usize..];
+            let read = decompress.total_out() - before_out;
+
+            match status {
+                Status::StreamEnd => return Some(output),
+                // An incomplete stream.
+                Status::Ok | Status::BufError if read == 0 && eof => return None,
+                Status::Ok | Status::BufError => {}
+            }
+        }
     }
 
     #[cfg(not(feature = "unsafe"))]
