@@ -99,10 +99,14 @@ pub(crate) struct Renderer<'a> {
     pub(crate) in_type3_glyph: bool,
     /// The active clips, outermost first.
     pub(crate) clips: Vec<clip::Clip>,
+    /// The device-space bounds of the page, which may extend past the render target (a tile
+    /// of the page).
+    pub(crate) page: Rect,
 }
 
 impl<'r> Renderer<'r> {
     pub(crate) fn new(ctx: &'r mut RenderContext, global: &'r GlobalState) -> Self {
+        let page = Rect::new(0.0, 0.0, ctx.width() as f64, ctx.height() as f64);
         Self {
             global,
             ctx,
@@ -110,6 +114,7 @@ impl<'r> Renderer<'r> {
             soft_mask_cache: FxHashMap::default(),
             in_type3_glyph: false,
             clips: Vec::new(),
+            page,
         }
     }
 
@@ -310,6 +315,7 @@ pub fn render_into<'a>(
     let global = GlobalState::new(cache, render_settings);
     let mut device = Renderer::new(ctx, &global);
     let crop_box = page.intersected_crop_box().to_kurbo();
+    device.page = transform.transform_rect_bbox(crop_box);
     let [a, b, c, d, _, _] = transform.as_coeffs();
     let axis_aligned = (b == 0.0 && c == 0.0) || (a == 0.0 && d == 0.0);
     let mapped_crop_box = transform

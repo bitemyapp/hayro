@@ -66,6 +66,18 @@ pub(crate) fn decode(
             .jpeg_set_out_colorspace(out_colorspace)
             .jpeg_set_scale_denominators(across, down),
     );
+
+    // Where only the top rows are needed, decoding stops after them.
+    let full_height = decoder.output_dimensions()?.1 as u32;
+    if let Some(rows) = image_params.rows
+        && image_params.height > 0
+    {
+        // In the JPEG's rows, where they're more or fewer than the dictionary says.
+        let jpeg_height = decoder.dimensions()?.1 as u64;
+        let rows = (u64::from(rows) * jpeg_height).div_ceil(u64::from(image_params.height));
+        decoder.set_row_limit(rows as usize);
+    }
+
     let mut decoded = decoder.decode().ok()?;
 
     if out_colorspace == ColorSpace::YCCK {
@@ -96,6 +108,7 @@ pub(crate) fn decode(
         bits_per_component: 8,
         width,
         height,
+        full_height: (height < full_height).then_some(full_height),
     };
 
     Some(FilterResult {

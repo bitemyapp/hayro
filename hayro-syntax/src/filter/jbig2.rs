@@ -107,6 +107,7 @@ pub(crate) fn decode(
             bits_per_component: bpc,
             width: page.width(),
             height: page.height(),
+            full_height: None,
         }),
     })
 }

@@ -24,7 +24,7 @@ pub(crate) fn decode_mask(
     obj: &ImageXObject<'_>,
     target_dimension: Option<(u32, u32)>,
 ) -> Option<DecodedMask> {
-    let ctx = decode_context(obj, target_dimension)?;
+    let ctx = decode_context(obj, target_dimension, None)?;
     let width = ctx.width;
     let scale_factors = ctx.scale_factors;
 

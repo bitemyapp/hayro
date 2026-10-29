@@ -175,6 +175,7 @@ pub(crate) fn decode(
             bits_per_component: bpc,
             width: settings.columns,
             height: if rows == 0 { decoded_rows } else { rows },
+            full_height: None,
         }),
     })
 }

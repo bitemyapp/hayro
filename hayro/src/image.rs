@@ -39,6 +39,8 @@ pub(crate) struct ImageKey {
     image: u128,
     /// The resolution hinted to the decoder.
     target: (u32, u32),
+    /// The rows hinted to the decoder, from the top, if not all of them.
+    rows: Option<u32>,
     /// The lengths of the image's axes on the target, as `f32` bits.
     scale: (u32, u32),
     /// A stencil's color.
@@ -615,6 +617,7 @@ impl Renderer<'_> {
         &self,
         image: u128,
         target: (u32, u32),
+        rows: Option<u32>,
         transform: &Affine,
         color: Option<[u8; 3]>,
     ) -> ImageKey {
@@ -622,6 +625,7 @@ impl Renderer<'_> {
         ImageKey {
             image,
             target,
+            rows,
             scale: ((x.length() as f32).to_bits(), (y.length() as f32).to_bits()),
             color,
             force_interpolation: self.global.force_image_interpolation,
@@ -680,6 +684,19 @@ impl Renderer<'_> {
         let (x, y) = x_y_advances(&transform);
         let target_width = (x.length() * image.width() as f64).ceil() as u32;
         let target_height = (y.length() * image.height() as f64).ceil() as u32;
+        // Decoding can stop after the last of the image's rows that can be seen on the page (the
+        // same for every tile of it), with rows to spare for filtering and for chroma upsampled
+        // from the rows below. Only for images `draw_image` won't make smaller: resampling to a
+        // smaller size depends on the height, and an image at its size stays so when cut.
+        let unshrunk =
+            |length: f64, pixels: u32| (pixels as f32 * length as f32).ceil() >= pixels as f32;
+        let rows = (unshrunk(x.length(), image.width()) && unshrunk(y.length(), image.height()))
+            .then(|| {
+                let seen = transform.inverse().transform_rect_bbox(self.on_page());
+                (seen.y1 + 16.0).ceil()
+            })
+            .filter(|&rows| rows < image.height() as f64)
+            .map(|rows| rows.max(1.0) as u32);
 
         match image {
             hayro_interpret::Image::Stencil(s) => {
@@ -691,6 +708,7 @@ impl Renderer<'_> {
                     self.image_key(
                         s.cache_key(),
                         (target_width, target_height),
+                        None,
                         &transform,
                         Some([c[0], c[1], c[2]]),
                     )
@@ -814,6 +832,7 @@ impl Renderer<'_> {
                 let key = self.image_key(
                     r.cache_key(),
                     (target_width, target_height),
+                    rows,
                     &transform,
                     None,
                 );
@@ -821,7 +840,7 @@ impl Renderer<'_> {
                 if let Some(drawn) = cached {
                     self.redraw(drawn, transform);
                 } else {
-                    r.with_rgba(
+                    r.with_rgba_rows(
                         |image, alpha| {
                             let (sx, sy) = image.scale_factors();
                             let scale = Affine::scale_non_uniform(sx as f64, sy as f64);
@@ -835,6 +854,7 @@ impl Renderer<'_> {
                             }
                         },
                         Some((target_width, target_height)),
+                        rows,
                     );
                 }
             }

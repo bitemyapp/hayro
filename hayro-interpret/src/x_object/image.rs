@@ -219,12 +219,13 @@ impl<'a> ImageXObject<'a> {
     pub(crate) fn decoded_image(
         &self,
         target_dimension: Option<(u32, u32)>,
+        rows: Option<u32>,
     ) -> Option<DecodedImage> {
         if self.kind.is_mask() {
             return None;
         }
 
-        decode_image(self, target_dimension)
+        decode_image(self, target_dimension, rows)
     }
 
     pub(crate) fn width(&self) -> u32 {

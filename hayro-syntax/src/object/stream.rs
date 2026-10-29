@@ -48,6 +48,10 @@ pub struct ImageDecodeParams {
     /// in case it's possible, a version of the image will be extracted that
     /// is as close as possible to the hinted dimension.
     pub target_dimension: Option<(u32, u32)>,
+    /// How many of the image's rows (as the image dictionary counts them) are needed, from
+    /// the top, if not all of them: a hint that decoding can stop after them, giving an
+    /// image of fewer rows (see [`ImageData::full_height`]).
+    pub rows: Option<u32>,
     /// The width of the image as indicated by the image dictionary.
     pub width: u32,
     /// The height of the image as indicated by the image dictionary.
@@ -270,6 +274,10 @@ pub struct ImageData {
     pub width: u32,
     /// The height of the image.
     pub height: u32,
+    /// Where only the image's first `height` rows were decoded (see
+    /// [`ImageDecodeParams::rows`]), the height of the whole image at the scale it was
+    /// decoded at.
+    pub full_height: Option<u32>,
 }
 
 /// The result of applying a filter.

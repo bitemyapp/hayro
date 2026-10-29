@@ -7,6 +7,8 @@ use kurbo::{Affine, BezPath, PathEl, Rect, Shape};
 pub(crate) struct Clip {
     /// The device-space bounds of the render target within this and the enclosing clips.
     visible: Rect,
+    /// The same for the whole page, past the render target where that's a tile of it.
+    on_page: Rect,
     /// Whether the clip was pushed to the render context, rather than skipped for clipping
     /// nothing that could be seen.
     pushed: bool,
@@ -54,17 +56,23 @@ impl Renderer<'_> {
 
     /// Note a clip with the given device-space bounds, which nothing outside of can be seen.
     pub(super) fn push_clip_bounds(&mut self, bounds: Rect, pushed: bool) {
-        let visible = self.visible();
         // Whole pixels, and one more: a pixel the clip only partly covers can still show a
         // drawing that only partly covers it.
         let bounds = bounds.expand().inflate(1.0, 1.0);
-        let visible = if bounds.is_finite() {
-            visible.intersect(bounds)
-        } else {
-            visible
+        let within = |rect: Rect| {
+            if bounds.is_finite() {
+                rect.intersect(bounds)
+            } else {
+                rect
+            }
         };
+        let (visible, on_page) = (within(self.visible()), within(self.on_page()));
 
-        self.clips.push(Clip { visible, pushed });
+        self.clips.push(Clip {
+            visible,
+            on_page,
+            pushed,
+        });
     }
 
     /// The part of the render target, in device pixels, that the active clips let through.
@@ -73,6 +81,12 @@ impl Renderer<'_> {
             || Rect::new(0.0, 0.0, self.ctx.width() as f64, self.ctx.height() as f64),
             |clip| clip.visible,
         )
+    }
+
+    /// The part of the page, in device pixels, that the active clips let through: the same for
+    /// every tile of it.
+    pub(super) fn on_page(&self) -> Rect {
+        self.clips.last().map_or(self.page, |clip| clip.on_page)
     }
 
     /// Whether a rectangle clips nothing that can be seen: it covers everything the render

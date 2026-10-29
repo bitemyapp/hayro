@@ -94,7 +94,20 @@ impl RasterImage<'_> {
         func: impl FnOnce(ImageData, Option<LumaData>),
         target_dimension: Option<(u32, u32)>,
     ) {
-        if let Some(decoded) = self.0.decoded_image(target_dimension) {
+        self.with_rgba_rows(func, target_dimension, None);
+    }
+
+    /// Like [`Self::with_rgba`], where only the image's first `rows` rows will be seen: a
+    /// hint that decoding can stop after them, so the image passed may have fewer rows than
+    /// its dictionary says (its scale factors still map it to the whole image's space, from
+    /// the top).
+    pub fn with_rgba_rows(
+        &self,
+        func: impl FnOnce(ImageData, Option<LumaData>),
+        target_dimension: Option<(u32, u32)>,
+        rows: Option<u32>,
+    ) {
+        if let Some(decoded) = self.0.decoded_image(target_dimension, rows) {
             func(decoded.image, decoded.alpha);
         }
     }

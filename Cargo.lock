@@ -2069,7 +2069,7 @@ checksum = "cb8a0807f7c01457d0379ba880ba6322660448ddebc890ce29bb64da71fb40f9"
 [[package]]
 name = "zune-core"
 version = "0.5.3"
-source = "git+https://github.com/bitemyapp/zune-image?branch=scaled-idct#cb1ec8021cf42b14d6a9b9e490ea839a33c1dd52"
+source = "git+https://github.com/bitemyapp/zune-image?branch=scaled-idct#13f18bce7bdc1af4bb1890b88436360751534899"
 
 [[package]]
 name = "zune-jpeg"
@@ -2083,7 +2083,7 @@ dependencies = [
 [[package]]
 name = "zune-jpeg"
 version = "0.5.16-rc3"
-source = "git+https://github.com/bitemyapp/zune-image?branch=scaled-idct#cb1ec8021cf42b14d6a9b9e490ea839a33c1dd52"
+source = "git+https://github.com/bitemyapp/zune-image?branch=scaled-idct#13f18bce7bdc1af4bb1890b88436360751534899"
 dependencies = [
  "zune-core 0.5.3",
 ]

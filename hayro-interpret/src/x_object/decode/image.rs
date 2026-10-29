@@ -13,11 +13,13 @@ pub(crate) struct DecodedImage {
     pub(crate) alpha: Option<LumaData>,
 }
 
+/// Decode the image, or only its first `rows` rows (as a hint) if it has no mask of its own.
 pub(crate) fn decode_image(
     obj: &ImageXObject<'_>,
     target_dimension: Option<(u32, u32)>,
+    rows: Option<u32>,
 ) -> Option<DecodedImage> {
-    ImageDecoder::new(obj, target_dimension)?.decode()
+    ImageDecoder::new(obj, target_dimension, rows)?.decode()
 }
 
 struct ImageDecoder<'a, 'b> {
@@ -29,8 +31,16 @@ struct ImageDecoder<'a, 'b> {
 }
 
 impl<'a, 'b> ImageDecoder<'a, 'b> {
-    fn new(obj: &'a ImageXObject<'b>, target_dimension: Option<(u32, u32)>) -> Option<Self> {
-        let ctx = decode_context(obj, target_dimension)?;
+    fn new(
+        obj: &'a ImageXObject<'b>,
+        target_dimension: Option<(u32, u32)>,
+        rows: Option<u32>,
+    ) -> Option<Self> {
+        // A mask of another stream is decoded whole, so the image is too.
+        let dict = obj.stream.dict();
+        let rows =
+            rows.filter(|_| !dict.contains_key(SMASK) && dict.get::<Stream<'_>>(MASK).is_none());
+        let ctx = decode_context(obj, target_dimension, rows)?;
         let color_key_mask = obj.stream.dict().get::<SmallVec<[u16; 4]>>(MASK);
 
         Some(Self {

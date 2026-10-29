@@ -88,6 +88,7 @@ pub(crate) fn decode(data: &[u8], params: &ImageDecodeParams) -> Option<FilterRe
             bits_per_component: bpc,
             width,
             height,
+            full_height: None,
         }),
     })
 }

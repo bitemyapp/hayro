@@ -28,6 +28,7 @@ struct DecodeContext<'a> {
 fn decode_context<'a>(
     obj: &ImageXObject<'a>,
     target_dimension: Option<(u32, u32)>,
+    rows: Option<u32>,
 ) -> Option<DecodeContext<'a>> {
     let dict = obj.stream.dict();
     let dict_bpc = dict
@@ -41,6 +42,7 @@ fn decode_context<'a>(
         bpc: dict_bpc,
         num_components: color_space.as_ref().map(|c| c.num_components()),
         target_dimension,
+        rows,
         width: obj.width(),
         height: obj.height(),
     };
@@ -58,7 +60,7 @@ fn decode_context<'a>(
         .as_ref()
         .map(|d| {
             scale_x = obj.width() as f32 / d.width as f32;
-            scale_y = obj.height() as f32 / d.height as f32;
+            scale_y = obj.height() as f32 / d.full_height.unwrap_or(d.height) as f32;
 
             (d.width, d.height)
         })
