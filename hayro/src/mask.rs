@@ -132,7 +132,7 @@ fn draw_region(
         renderer.ctx.pop_layer();
     }
 
-    let mut pix = Pixmap::new(width, height);
+    let mut pix = crate::zeroed_pixmap(width, height);
     renderer.ctx.flush();
     let mut resources = vello_cpu::Resources::default();
     renderer.ctx.render(&mut pix, &mut resources);

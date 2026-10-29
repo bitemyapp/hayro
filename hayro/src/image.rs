@@ -783,7 +783,7 @@ impl Renderer<'_> {
                                     });
                                     let mut ctx = self.child_context(width, height);
                                     let mut sub_renderer = Renderer::new(&mut ctx, self.global);
-                                    let mut sub_pix = Pixmap::new(width, height);
+                                    let mut sub_pix = crate::zeroed_pixmap(width, height);
                                     sub_renderer.ctx.set_transform(
                                         Affine::translate((-region.x0, -region.y0)) * transform,
                                     );

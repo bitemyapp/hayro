@@ -112,7 +112,7 @@ impl Renderer<'_> {
             ctx.set_paint(BLACK);
             ctx.fill_path(outline.as_ref());
             ctx.flush();
-            let mut pixmap = Pixmap::new(width, height);
+            let mut pixmap = crate::zeroed_pixmap(width, height);
             ctx.render(&mut pixmap, &mut vello_cpu::Resources::default());
             Some(CachedGlyph {
                 pixmap: Arc::new(pixmap),
@@ -215,7 +215,7 @@ impl Renderer<'_> {
         };
 
         if combine {
-            let mut combined = Pixmap::new(width as u16, height as u16);
+            let mut combined = crate::zeroed_pixmap(width as u16, height as u16);
             let stride = combined.width() as usize;
             let pixels = combined.data_mut();
             for (pixmap, x, y) in coverage {

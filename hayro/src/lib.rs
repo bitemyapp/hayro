@@ -275,7 +275,7 @@ pub fn render<'a>(
     );
     ctx.flush();
 
-    let mut pixmap = Pixmap::new(ctx.width(), ctx.height());
+    let mut pixmap = zeroed_pixmap(ctx.width(), ctx.height());
     ctx.render_with(
         &mut pixmap,
         &mut vello_cpu::Resources::default(),
@@ -334,6 +334,14 @@ pub fn render_into<'a>(
     if clip_crop_box {
         device.pop_clip();
     }
+}
+
+/// A pixmap of transparent black from zeroed memory: for large ones the system hands out
+/// pages already zeroed, where `Pixmap::new` writes every pixel first, and the rasterizer
+/// writes them all again.
+pub(crate) fn zeroed_pixmap(width: u16, height: u16) -> Pixmap {
+    let bytes = vec![0; usize::from(width) * usize::from(height) * 4];
+    Pixmap::from_parts(bytes, width, height, vello_cpu::PixelMetadata::default())
 }
 
 // Just a convenience method for testing.

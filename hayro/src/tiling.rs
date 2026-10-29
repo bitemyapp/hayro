@@ -137,7 +137,7 @@ impl Renderer<'_> {
             }
         }
 
-        let mut pixmap = Pixmap::new(x.size, y.size);
+        let mut pixmap = crate::zeroed_pixmap(x.size, y.size);
         ctx.flush();
         ctx.render(&mut pixmap, &mut vello_cpu::Resources::default());
 
