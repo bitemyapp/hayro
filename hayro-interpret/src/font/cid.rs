@@ -27,10 +27,10 @@ pub(crate) struct Type0Font {
     cache_key: u128,
     dw: f32,
     dw2: (f32, f32),
-    widths: FxHashMap<u32, f32>,
+    widths: CidWidths<f32>,
     encoding: CMap,
     to_unicode: Option<CMap>,
-    widths2: FxHashMap<u32, [f32; 3]>,
+    widths2: CidWidths<[f32; 3]>,
     cid_to_gid_map: CidToGIdMap,
     /// PostScript name from the PDF.
     postscript_name: Option<String>,
@@ -265,7 +265,7 @@ impl Type0Font {
             && let Some(actual_width) = t.glyph_metrics().advance_width(glyph)
             // Only use an expected width if there is an explicit /W array,
             // not the default width, as it leads to weird results from my testing.
-            && let Some(expected_width) = self.widths.get(&cid).copied()
+            && let Some(expected_width) = self.widths.get(cid)
         {
             return stretch_glyph(path, expected_width, actual_width);
         }
@@ -343,15 +343,15 @@ impl Type0Font {
         let cid = self.code_to_cid(code).unwrap_or(0);
         if self.horizontal {
             Vec2::new(self.horizontal_width(cid) as f64, 0.0)
-        } else if let Some([w, _, _]) = self.widths2.get(&cid) {
-            Vec2::new(0.0, *w as f64)
+        } else if let Some([w, _, _]) = self.widths2.get(cid) {
+            Vec2::new(0.0, w as f64)
         } else {
             Vec2::new(0.0, self.dw2.1 as f64)
         }
     }
 
     fn horizontal_width(&self, cid: u32) -> f32 {
-        self.widths.get(&cid).copied().unwrap_or(self.dw)
+        self.widths.get(cid).unwrap_or(self.dw)
     }
 
     pub(crate) fn is_horizontal(&self) -> bool {
@@ -378,8 +378,8 @@ impl Type0Font {
 
         if self.is_horizontal() {
             Vec2::default()
-        } else if let Some([_, v1, v2]) = self.widths2.get(&cid) {
-            Vec2::new(-*v1 as f64, -*v2 as f64)
+        } else if let Some([_, v1, v2]) = self.widths2.get(cid) {
+            Vec2::new(-v1 as f64, -v2 as f64)
         } else {
             Vec2::new(-self.horizontal_width(cid) as f64 / 2.0, -self.dw2.0 as f64)
         }
@@ -502,52 +502,132 @@ impl CidToGIdMap {
     }
 }
 
-fn read_widths(arr: &Array<'_>) -> Option<FxHashMap<u32, f32>> {
-    let mut map = FxHashMap::default();
+/// The widths (or vertical metrics) of a `W` (or `W2`) array: runs of consecutive CIDs, each
+/// with a value per CID or one for all of them, so that a range doesn't take an entry per CID.
+#[derive(Debug)]
+struct CidWidths<T> {
+    runs: Vec<WidthRun>,
+    values: Vec<T>,
+    /// Whether a run starts at or before the end of the one before it. The runs are then
+    /// searched from the last, since a later entry overrides an earlier one; otherwise (as
+    /// almost always) they're in order and searched by halves.
+    unordered: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WidthRun {
+    first: u32,
+    last: u32,
+    /// Where the run's values start in [`CidWidths::values`].
+    start: usize,
+    /// Whether each CID has a value of its own, rather than all of them the first.
+    each: bool,
+}
+
+impl<T> Default for CidWidths<T> {
+    fn default() -> Self {
+        Self {
+            runs: Vec::new(),
+            values: Vec::new(),
+            unordered: false,
+        }
+    }
+}
+
+impl<T: Copy> CidWidths<T> {
+    fn get(&self, cid: u32) -> Option<T> {
+        let run = if self.unordered {
+            self.runs
+                .iter()
+                .rev()
+                .find(|run| (run.first..=run.last).contains(&cid))
+        } else {
+            let index = self.runs.partition_point(|run| run.last < cid);
+            self.runs.get(index).filter(|run| run.first <= cid)
+        }?;
+        let offset = if run.each { cid - run.first } else { 0 };
+
+        Some(self.values[run.start + offset as usize])
+    }
+
+    /// Give the values added since `start` to the CIDs from `first` on, one each; `None` if
+    /// they'd go past the last CID.
+    fn add_each(&mut self, first: u32, start: usize) -> Option<()> {
+        let count = u32::try_from(self.values.len() - start).ok()?;
+        first.checked_add(count)?;
+        if count > 0 {
+            self.add_run(WidthRun {
+                first,
+                last: first + (count - 1),
+                start,
+                each: true,
+            });
+        }
+
+        Some(())
+    }
+
+    /// Give `value` to the CIDs from `first` to `last`.
+    fn add_range(&mut self, first: u32, last: u32, value: T) {
+        if first <= last {
+            self.values.push(value);
+            self.add_run(WidthRun {
+                first,
+                last,
+                start: self.values.len() - 1,
+                each: false,
+            });
+        }
+    }
+
+    fn add_run(&mut self, run: WidthRun) {
+        self.unordered |= self.runs.last().is_some_and(|last| last.last >= run.first);
+        self.runs.push(run);
+    }
+}
+
+fn read_widths(arr: &Array<'_>) -> Option<CidWidths<f32>> {
+    let mut widths = CidWidths::default();
     let mut iter = arr.flex_iter();
 
     loop {
-        if let Some((mut first, range)) = iter.next::<(u32, Array<'_>)>() {
-            for width in range.iter::<f32>() {
-                map.insert(first, width);
-                first = first.checked_add(1)?;
-            }
+        if let Some((first, range)) = iter.next::<(u32, Array<'_>)>() {
+            let start = widths.values.len();
+            widths.values.extend(range.iter::<f32>());
+            widths.add_each(first, start)?;
         } else if let Some((first, second, width)) = iter.next::<(u32, u32, f32)>() {
-            for i in first..=second {
-                map.insert(i, width);
-            }
+            widths.add_range(first, second, width);
         } else {
             break;
         }
     }
 
-    Some(map)
+    Some(widths)
 }
 
-fn read_widths2(arr: &Array<'_>) -> Option<FxHashMap<u32, [f32; 3]>> {
-    let mut map = FxHashMap::default();
+fn read_widths2(arr: &Array<'_>) -> Option<CidWidths<[f32; 3]>> {
+    let mut widths = CidWidths::default();
     let mut iter = arr.flex_iter();
 
     loop {
-        if let Some((mut first, range)) = iter.next::<(u32, Array<'_>)>() {
+        if let Some((first, range)) = iter.next::<(u32, Array<'_>)>() {
+            let start = widths.values.len();
             let mut iter = range.iter::<f32>();
 
             while let Some(w) = iter.next() {
                 let v1 = iter.next()?;
                 let v2 = iter.next()?;
-                map.insert(first, [w, v1, v2]);
-                first = first.checked_add(1)?;
+                widths.values.push([w, v1, v2]);
             }
+            widths.add_each(first, start)?;
         } else if let Some((first, second, w, v1, v2)) = iter.next::<(u32, u32, f32, f32, f32)>() {
-            for i in first..=second {
-                map.insert(i, [w, v1, v2]);
-            }
+            widths.add_range(first, second, [w, v1, v2]);
         } else {
             break;
         }
     }
 
-    Some(map)
+    Some(widths)
 }
 
 fn read_cid_system_info(descendant_font: &Dict<'_>) -> Option<CharacterCollection> {
@@ -581,5 +661,79 @@ fn read_encoding(object: &Object<'_>, cmap_resolver: &CMapResolverFn) -> Option<
             CMap::parse(&decoded, move |n| (resolver)(n))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hayro_syntax::object::FromBytes;
+
+    /// The widths a `W` array gives, entry by entry, as an earlier version kept them.
+    fn widths_by_cid(arr: &Array<'_>) -> Option<FxHashMap<u32, f32>> {
+        let mut map = FxHashMap::default();
+        let mut iter = arr.flex_iter();
+
+        loop {
+            if let Some((mut first, range)) = iter.next::<(u32, Array<'_>)>() {
+                for width in range.iter::<f32>() {
+                    map.insert(first, width);
+                    first = first.checked_add(1)?;
+                }
+            } else if let Some((first, second, width)) = iter.next::<(u32, u32, f32)>() {
+                for i in first..=second {
+                    map.insert(i, width);
+                }
+            } else {
+                break;
+            }
+        }
+
+        Some(map)
+    }
+
+    #[test]
+    fn widths_as_runs() {
+        for w in [
+            &b"[1 [500 600 700] 10 20 300 21 [250]]"[..],
+            b"[]",
+            b"[5 []]",
+            b"[0 65535 1000]",
+            // Out of order, overlapping, and empty ranges: later entries win.
+            b"[10 20 300 5 12 400 15 [1 2 3] 30 25 9 100 [7]]",
+            b"[3 [10 20] 0 3 50 4 [60]]",
+            b"[1 [500 x 700] 2 2 9]",
+        ] {
+            let arr = Array::from_bytes(w).unwrap();
+            let expected = widths_by_cid(&arr).unwrap();
+            let widths = read_widths(&arr).unwrap();
+            for cid in 0..70_000 {
+                assert_eq!(
+                    widths.get(cid),
+                    expected.get(&cid).copied(),
+                    "{cid} in {w:?}"
+                );
+            }
+        }
+
+        // A run past the last CID gives no widths at all, as before.
+        let arr = Array::from_bytes(b"[4294967295 [500]]").unwrap();
+        assert!(widths_by_cid(&arr).is_none() && read_widths(&arr).is_none());
+        let arr = Array::from_bytes(b"[4294967295 4294967295 500]").unwrap();
+        assert_eq!(read_widths(&arr).unwrap().get(u32::MAX), Some(500.0));
+    }
+
+    #[test]
+    fn vertical_metrics_as_runs() {
+        let arr = Array::from_bytes(b"[1 [1000 500 880 900 450 800] 5 9 -1000 500 880]").unwrap();
+        let widths = read_widths2(&arr).unwrap();
+        assert_eq!(widths.get(0), None);
+        assert_eq!(widths.get(1), Some([1000.0, 500.0, 880.0]));
+        assert_eq!(widths.get(2), Some([900.0, 450.0, 800.0]));
+        assert_eq!(widths.get(3), None);
+        assert_eq!(widths.get(9), Some([-1000.0, 500.0, 880.0]));
+        assert_eq!(widths.get(10), None);
+        // A group that isn't whole drops the array, as before.
+        assert!(read_widths2(&Array::from_bytes(b"[1 [1000 500]]").unwrap()).is_none());
     }
 }
