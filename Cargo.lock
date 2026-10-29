@@ -906,8 +906,7 @@ dependencies = [
 [[package]]
 name = "moxcms"
 version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
+source = "git+https://github.com/bitemyapp/moxcms?branch=gamma-table-cache-0.8#b63298023362c19b0ea5499c2c8d35802fc1adac"
 dependencies = [
  "num-traits",
  "pxfm",

@@ -121,3 +121,8 @@ strip = "none"
 inherits = "release"
 debug = 1
 overflow-checks = true
+
+# moxcms with gamma tables from transfer characteristics computed once, rather than for
+# every transform to sRGB.
+[patch.crates-io]
+moxcms = { git = "https://github.com/bitemyapp/moxcms", branch = "gamma-table-cache-0.8" }
