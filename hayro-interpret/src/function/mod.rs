@@ -145,34 +145,48 @@ impl Function {
         let repr = &self.0;
         let (num_inputs, num_outputs) = (self.num_inputs(), self.num_outputs());
 
+        // One sample, as shadings and color spaces evaluate them, without dividing the input
+        // and output into samples.
+        if input.len() == num_inputs && output.len() == num_outputs {
+            return self.eval_sample(input, output);
+        }
+
         if !input.len().is_multiple_of(num_inputs)
             || input.len() / num_inputs * num_outputs != output.len()
         {
             return None;
         }
 
-        let mut clamped = [0.0; MAX_COMPONENTS];
-        let clamped = &mut clamped[..num_inputs];
-
         for (input, output) in input
             .chunks_exact(num_inputs)
             .zip(output.chunks_exact_mut(num_outputs))
         {
-            for ((clamped, value), domain) in clamped.iter_mut().zip(input).zip(&repr.domain) {
-                *clamped = domain.clamp(*value);
-            }
+            self.eval_sample(input, output)?;
+        }
 
-            match &repr.function_type {
-                FunctionType::Type0(f) => f.eval(clamped, output),
-                FunctionType::Type2(f) => f.eval(clamped[0], output),
-                FunctionType::Type3(f) => f.eval(clamped[0], output)?,
-                FunctionType::Type4(f) => f.eval(clamped, output)?,
-            }
+        Some(())
+    }
 
-            if let Some(range) = &repr.range {
-                for (value, range) in output.iter_mut().zip(range) {
-                    *value = range.clamp(*value);
-                }
+    /// Evaluate the function for one sample, with as many values as it takes and gives.
+    fn eval_sample(&self, input: &[f32], output: &mut [f32]) -> Option<()> {
+        let repr = &self.0;
+        let mut clamped = [0.0; MAX_COMPONENTS];
+        let clamped = &mut clamped[..input.len()];
+
+        for ((clamped, value), domain) in clamped.iter_mut().zip(input).zip(&repr.domain) {
+            *clamped = domain.clamp(*value);
+        }
+
+        match &repr.function_type {
+            FunctionType::Type0(f) => f.eval(clamped, output),
+            FunctionType::Type2(f) => f.eval(clamped[0], output),
+            FunctionType::Type3(f) => f.eval(clamped[0], output)?,
+            FunctionType::Type4(f) => f.eval(clamped, output)?,
+        }
+
+        if let Some(range) = &repr.range {
+            for (value, range) in output.iter_mut().zip(range) {
+                *value = range.clamp(*value);
             }
         }
 
