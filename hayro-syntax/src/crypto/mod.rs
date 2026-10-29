@@ -144,6 +144,17 @@ pub(crate) fn get(
         }
     };
 
+    // Crypt filters that leave both streams and strings as they are (the `Identity` filter)
+    // encrypt only embedded files (`EFF`), which aren't read here: the document can be read
+    // without a key, and so without the password, which then guards only its attachments
+    // (`/AuthEvent /EFOpen`).
+    if let Some(data) = &data
+        && data.stream_filter.cfm == DecryptorTag::None
+        && data.string_filter.cfm == DecryptorTag::None
+    {
+        return Ok(Decryptor::None);
+    }
+
     let byte_length = length / 8;
     if byte_length == 0 {
         return Err(InvalidEncryption);
