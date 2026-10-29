@@ -135,29 +135,55 @@ impl<'a> Type3<'a> {
         while let Some(instruction) = iter.next() {
             use TypedInstruction::*;
             match instruction {
-                SaveState(_) | RestoreState(_) | Transform(_) | MoveTo(_) | LineTo(_)
-                | CubicTo(_) | CubicStartTo(_) | CubicEndTo(_) | ClosePath(_) | RectPath(_)
-                | FillPathNonZero(_) | FillPathNonZeroCompatibility(_) | FillPathEvenOdd(_)
-                | EndPath(_) | ClipNonZero(_) | ClipEvenOdd(_) | InlineImage(_)
-                | LineWidth(_) | LineCap(_) | LineJoin(_) | MiterLimit(_) | DashPattern(_)
-                | FlatnessTolerance(_) | RenderingIntent(_) | MarkedContentPoint(_)
-                | MarkedContentPointWithProperties(_) | BeginMarkedContent(_)
-                | BeginMarkedContentWithProperties(_) | EndMarkedContent(_)
-                | BeginCompatibility(_) | EndCompatibility(_) => {}
+                SaveState(_)
+                | RestoreState(_)
+                | Transform(_)
+                | MoveTo(_)
+                | LineTo(_)
+                | CubicTo(_)
+                | CubicStartTo(_)
+                | CubicEndTo(_)
+                | ClosePath(_)
+                | RectPath(_)
+                | FillPathNonZero(_)
+                | FillPathNonZeroCompatibility(_)
+                | FillPathEvenOdd(_)
+                | EndPath(_)
+                | ClipNonZero(_)
+                | ClipEvenOdd(_)
+                | InlineImage(_)
+                | LineWidth(_)
+                | LineCap(_)
+                | LineJoin(_)
+                | MiterLimit(_)
+                | DashPattern(_)
+                | FlatnessTolerance(_)
+                | RenderingIntent(_)
+                | MarkedContentPoint(_)
+                | MarkedContentPointWithProperties(_)
+                | BeginMarkedContent(_)
+                | BeginMarkedContentWithProperties(_)
+                | EndMarkedContent(_)
+                | BeginCompatibility(_)
+                | EndCompatibility(_) => {}
                 // Colors are ignored in a glyph that gives a shape.
-                ColorSpaceStroke(_) | ColorSpaceNonStroke(_) | StrokeColor(_)
-                | StrokeColorNamed(_) | NonStrokeColor(_) | NonStrokeColorNamed(_)
-                | StrokeColorDeviceGray(_) | NonStrokeColorDeviceGray(_)
-                | StrokeColorDeviceRgb(_) | NonStrokeColorDeviceRgb(_) | StrokeColorCmyk(_)
+                ColorSpaceStroke(_)
+                | ColorSpaceNonStroke(_)
+                | StrokeColor(_)
+                | StrokeColorNamed(_)
+                | NonStrokeColor(_)
+                | NonStrokeColorNamed(_)
+                | StrokeColorDeviceGray(_)
+                | NonStrokeColorDeviceGray(_)
+                | StrokeColorDeviceRgb(_)
+                | NonStrokeColorDeviceRgb(_)
+                | StrokeColorCmyk(_)
                 | NonStrokeColorCmyk(_) => {}
                 _ => return None,
             }
         }
 
-        Some(
-            (self.matrix * Affine::scale(UNITS_PER_EM as f64))
-                .transform_rect_bbox(bounds.abs()),
-        )
+        Some((self.matrix * Affine::scale(UNITS_PER_EM as f64)).transform_rect_bbox(bounds.abs()))
     }
 
     pub(crate) fn render_glyph(
